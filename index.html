@@ -108,7 +108,7 @@
             });
         }
 
-        // --- 4. Firebase認証・データ取得（省エネ版） ---
+        // --- 4. Firebase認証・データ取得 ---
         auth.onAuthStateChanged(async (user) => {
             if (user) {
                 const doc = await db.collection('users').doc(user.uid).get();
@@ -131,7 +131,6 @@
             state.allUsers = snapshot.docs.map(doc => doc.data());
         }
 
-        // 省エネのため onSnapshot ではなく一度きりの get() に変更
         async function fetchDMsOnce() {
             if (!state.currentUserData) return;
             const snapshot = await db.collection('dms')
@@ -142,18 +141,64 @@
 
         function subscribeMessages(roomId) {
             if (state.unsubscribeMessages) state.unsubscribeMessages();
-            // 開いているルームだけ、直近50件をリアルタイム監視
             state.unsubscribeMessages = db.collection('messages').doc(roomId).collection('chats')
                 .orderBy('createdAt', 'desc')
                 .limit(50)
                 .onSnapshot(snapshot => {
                     const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     state.messages = docs.reverse();
-                    renderApp();
-
-                    const container = document.getElementById('messageContainer');
-                    if (container) container.scrollTop = container.scrollHeight;
+                    
+                    // チャット画面にいる時は、画面全体を再描画せずメッセージエリアだけを更新して入力欄を守る
+                    if (state.view === 'chat') {
+                        updateChatMessagesOnly();
+                    } else {
+                        renderApp();
+                    }
                 });
+        }
+
+        function updateChatMessagesOnly() {
+            const container = document.getElementById('messageContainer');
+            if (!container) return;
+
+            const currentUser = state.currentUserData;
+            container.innerHTML = state.messages.length === 0 
+                ? '<div class="text-center text-xs text-slate-400 py-10">メッセージやファイルを送信してみましょう！</div>' 
+                : state.messages.map(m => {
+                    const isSelf = m.senderId === currentUser.loginId;
+                    if (m.unsent) {
+                        return `
+                            <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'}">
+                                <div class="px-4 py-2 rounded-xl text-xs bg-slate-200/60 dark:bg-slate-800 text-slate-400 italic">
+                                    メッセージの送信を取り消しました
+                                </div>
+                            </div>
+                        `;
+                    }
+                    return `
+                        <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'} group">
+                            <span class="text-xs text-slate-400 mb-1 px-1">${escapeHtml(m.senderName)}</span>
+                            <div class="flex items-end space-x-2 max-w-[85%] ${isSelf ? 'flex-row-reverse space-x-reverse' : ''}">
+                                <div class="px-4 py-2.5 rounded-2xl text-sm shadow-sm ${isSelf ? 'bg-blue-500 text-white rounded-br-none' : 'bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-bl-none border border-slate-100 dark:border-slate-800'}">
+                                    ${m.text ? `<div>${escapeHtml(m.text)}</div>` : ''}
+                                    ${m.file ? renderFileContent(m.file) : ''}
+                                </div>
+                                <div class="flex flex-col items-end text-[10px] text-slate-400 flex-shrink-0">
+                                    <span>${escapeHtml(m.time)}</span>
+                                </div>
+                                ${isSelf ? `
+                                    <button data-unsend-id="${escapeHtml(m.id)}" class="unsend-btn opacity-0 group-hover:opacity-100 transition text-[11px] text-slate-400 hover:text-red-400 px-1" title="送信取り消し">
+                                        取り消し
+                                    </button>
+                                ` : ''}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+            container.scrollTop = container.scrollHeight;
+            lucide.createIcons();
+            attachUnsendEvents();
         }
 
         // --- 5. 描画ルーター ---
@@ -364,13 +409,14 @@
         }
 
         function renderChatScreen(currentUser) {
-            if (state.activeRoomId) {
-                subscribeMessages(state.activeRoomId);
-            }
-
             const activeRoom = state.dms.find(r => r.id === state.activeRoomId);
             const partnerLoginId = activeRoom ? activeRoom.members.find(id => id !== currentUser.loginId) : null;
             const activePartner = state.allUsers.find(u => u.loginId === partnerLoginId) || { name: '不明', loginId: '', avatar: null };
+
+            // 初回表示時にリスナーを登録
+            setTimeout(() => {
+                if (state.activeRoomId) subscribeMessages(state.activeRoomId);
+            }, 0);
 
             return `
                 <div class="flex-1 flex flex-col h-full bg-slate-50 dark:bg-slate-950 max-w-xl mx-auto w-full shadow-lg border-x border-slate-200 dark:border-slate-800">
@@ -395,7 +441,6 @@
                         ${state.messages.length === 0 ? '<div class="text-center text-xs text-slate-400 py-10">メッセージやファイルを送信してみましょう！</div>' : ''}
                         ${state.messages.map(m => {
                             const isSelf = m.senderId === currentUser.loginId;
-
                             if (m.unsent) {
                                 return `
                                     <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'}">
@@ -405,7 +450,6 @@
                                     </div>
                                 `;
                             }
-
                             return `
                                 <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'} group">
                                     <span class="text-xs text-slate-400 mb-1 px-1">${escapeHtml(m.senderName)}</span>
@@ -452,6 +496,26 @@
                     </div>
                 </div>
             `;
+        }
+
+        function attachUnsendEvents() {
+            document.querySelectorAll('.unsend-btn').forEach(btn => {
+                btn.onclick = async (e) => {
+                    e.stopPropagation();
+                    const msgId = btn.getAttribute('data-unsend-id');
+                    if (confirm('このメッセージを取り消しますか？')) {
+                        try {
+                            await db.collection('messages').doc(state.activeRoomId).collection('chats').doc(msgId).update({
+                                unsent: true,
+                                text: '',
+                                file: null
+                            });
+                        } catch (err) {
+                            alert('エラー: ' + err.message);
+                        }
+                    }
+                };
+            });
         }
 
         // --- 6. イベントハンドラ ---
@@ -588,6 +652,7 @@
                     const roomId = getRoomId(state.currentUserData.loginId, targetLoginId);
                     state.activeRoomId = roomId;
                     state.view = 'chat';
+                    state.messages = [];
                     renderApp();
                 };
             });
@@ -597,6 +662,7 @@
                     const roomId = item.getAttribute('data-room-id');
                     state.activeRoomId = roomId;
                     state.view = 'chat';
+                    state.messages = [];
                     renderApp();
                 };
             });
@@ -712,23 +778,7 @@
                 };
             }
 
-            document.querySelectorAll('.unsend-btn').forEach(btn => {
-                btn.onclick = async (e) => {
-                    e.stopPropagation();
-                    const msgId = btn.getAttribute('data-unsend-id');
-                    if (confirm('このメッセージを取り消しますか？')) {
-                        try {
-                            await db.collection('messages').doc(state.activeRoomId).collection('chats').doc(msgId).update({
-                                unsent: true,
-                                text: '',
-                                file: null
-                            });
-                        } catch (err) {
-                            alert('エラー: ' + err.message);
-                        }
-                    }
-                };
-            });
+            attachUnsendEvents();
         }
     </script>
 </body>
