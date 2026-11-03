@@ -41,7 +41,7 @@
         const state = {
             isSignupMode: false,
             currentTab: 'chats',
-            view: 'home',        // 'home' | 'chat' | 'settings'
+            view: 'home',        // 'home' | 'chat' | 'settings' | 'details'
             activeRoomId: null,
             selectedFile: null,
             tempAvatar: null,
@@ -111,14 +111,18 @@
         // --- 4. Firebase認証・データ取得 ---
         auth.onAuthStateChanged(async (user) => {
             if (user) {
-                const doc = await db.collection('users').doc(user.uid).get();
-                if (doc.exists) {
-                    state.currentUserData = doc.data();
-                } else {
-                    state.currentUserData = { uid: user.uid, loginId: user.email.split('@')[0], name: '名無し', friends: [], avatar: null };
+                try {
+                    const doc = await db.collection('users').doc(user.uid).get();
+                    if (doc.exists) {
+                        state.currentUserData = doc.data();
+                    } else {
+                        state.currentUserData = { uid: user.uid, loginId: user.email.split('@')[0], name: '名無し', friends: [], avatar: null };
+                    }
+                    await fetchAllUsers();
+                    await fetchDMsOnce();
+                } catch (err) {
+                    console.error("データ取得エラー:", err);
                 }
-                await fetchAllUsers();
-                await fetchDMsOnce();
             } else {
                 state.currentUserData = null;
                 if (state.unsubscribeMessages) state.unsubscribeMessages();
@@ -127,16 +131,50 @@
         });
 
         async function fetchAllUsers() {
-            const snapshot = await db.collection('users').get();
-            state.allUsers = snapshot.docs.map(doc => doc.data());
+            try {
+                const snapshot = await db.collection('users').get();
+                state.allUsers = snapshot.docs.map(doc => doc.data());
+            } catch (err) {
+                console.error("ユーザー一覧取得エラー:", err);
+            }
         }
 
+        // 【修正】フレンドとのルームを自動補完しつつ、直近のやり取り順に取得する
         async function fetchDMsOnce() {
             if (!state.currentUserData) return;
-            const snapshot = await db.collection('dms')
-              .where('members', 'array-contains', state.currentUserData.loginId)
-              .get();
-            state.dms = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            try {
+                const snapshot = await db.collection('dms')
+                  .where('members', 'array-contains', state.currentUserData.loginId)
+                  .get();
+                
+                let fetchedDms = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+                // フレンド全員分とのルームが存在するか確認し、なければ仮想的に補完して表示をもれなくする
+                const friends = state.currentUserData.friends || [];
+                friends.forEach(friendId => {
+                    const roomId = getRoomId(state.currentUserData.loginId, friendId);
+                    const exists = fetchedDms.some(d => d.id === roomId);
+                    if (!exists) {
+                        fetchedDms.push({
+                            id: roomId,
+                            members: [state.currentUserData.loginId, friendId],
+                            lastMessage: 'タップしてチャットを始めましょう',
+                            lastMessageTime: 0,
+                            lastSenderId: '',
+                            unread: false
+                        });
+                    }
+                });
+
+                // 新しい順に並び替え
+                fetchedDms.sort((a, b) => (b.lastMessageTime || 0) - (a.lastMessageTime || 0));
+
+                // 直近10件に制限
+                state.dms = fetchedDms.slice(0, 10);
+                state.allDmsCount = fetchedDms.length; // 総数保持
+            } catch (err) {
+                console.error("DM一覧取得エラー:", err);
+            }
         }
 
         function subscribeMessages(roomId) {
@@ -148,7 +186,6 @@
                     const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     state.messages = docs.reverse();
                     
-                    // チャット画面にいる時は、画面全体を再描画せずメッセージエリアだけを更新して入力欄を守る
                     if (state.view === 'chat') {
                         updateChatMessagesOnly();
                     } else {
@@ -218,6 +255,8 @@
                 root.innerHTML = renderChatScreen(state.currentUserData);
             } else if (state.view === 'settings') {
                 root.innerHTML = renderSettingsScreen(state.currentUserData);
+            } else if (state.view === 'details') {
+                root.innerHTML = renderDetailsScreen(state.currentUserData);
             }
 
             lucide.createIcons();
@@ -311,19 +350,28 @@
                             ${state.dms.map(room => {
                                 const partnerId = room.members.find(id => id !== currentUser.loginId);
                                 const partner = state.allUsers.find(u => u.loginId === partnerId) || { name: partnerId, avatar: null };
+                                const isUnread = room.lastSenderId && room.lastSenderId !== currentUser.loginId && room.unread === true;
 
                                 return `
                                     <div data-room-id="${room.id}" class="room-item flex items-center justify-between p-3.5 rounded-2xl cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60 border border-slate-100 dark:border-slate-800 transition shadow-sm">
                                         <div class="flex items-center space-x-3.5 min-w-0 flex-1">
                                             ${renderAvatar(partner, 'w-12 h-12', 'text-lg')}
                                             <div class="flex-1 min-w-0 pr-2">
-                                                <div class="font-bold text-slate-800 dark:text-slate-100 text-sm truncate">${escapeHtml(partner.name)}</div>
-                                                <div class="text-xs text-slate-400">タップしてチャットを開く</div>
+                                                <div class="flex items-center justify-between">
+                                                    <div class="font-bold text-slate-800 dark:text-slate-100 text-sm truncate">${escapeHtml(partner.name)}</div>
+                                                    ${isUnread ? '<span class="bg-red-500 text-white text-[10px] px-2 py-0.5 rounded-full font-bold">新着</span>' : ''}
+                                                </div>
+                                                <div class="text-xs text-slate-400 truncate mt-0.5">${escapeHtml(room.lastMessage || 'タップしてチャットを開く')}</div>
                                             </div>
                                         </div>
                                     </div>
                                 `;
                             }).join('')}
+                            ${(state.allDmsCount || 0) > 10 ? `
+                                <div class="text-center pt-3 pb-2">
+                                    <button id="goToDetailsBtn" class="text-xs text-blue-500 hover:underline font-semibold">すべての過去履歴を見る (Details)</button>
+                                </div>
+                            ` : ''}
                         ` : `
                             <div class="p-3 mb-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-100 dark:border-slate-800 space-y-2">
                                 <div class="text-xs font-bold text-slate-700 dark:text-slate-300">＋ IDで友達追加（相互追加）</div>
@@ -342,13 +390,107 @@
                                             <div class="text-xs text-slate-400">ID: ${escapeHtml(u.loginId)}</div>
                                         </div>
                                     </div>
-                                    <button data-start-chat="${escapeHtml(u.loginId)}" class="start-chat-btn px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white text-xs font-semibold rounded-xl shadow-sm transition">トーク</button>
+                                    <button data-start-chat="${escapeHtml(u.loginId)}" class="start-chat-btn px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white text-xs font-semibold rounded-sm transition">トーク</button>
                                 </div>
                             `).join('')}
                         `}
                     </div>
                 </div>
             `;
+        }
+
+        // --- Details（11件目以降の過去トーク全件表示ページ） ---
+        function renderDetailsScreen(currentUser) {
+            return `
+                <div class="flex-1 flex flex-col h-full bg-white dark:bg-slate-900 max-w-xl mx-auto w-full shadow-lg border-x border-slate-200 dark:border-slate-800">
+                    <div class="h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 flex items-center justify-between shadow-sm flex-shrink-0">
+                        <div class="flex items-center space-x-3">
+                            <button id="backToHomeFromDetailsBtn" class="p-2 -ml-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition flex items-center space-x-1">
+                                <i data-lucide="chevron-left" class="w-6 h-6"></i>
+                                <span class="text-sm font-semibold">戻る</span>
+                            </button>
+                            <h3 class="font-bold text-slate-800 dark:text-slate-100 text-base">すべての過去トーク履歴 (Details)</h3>
+                        </div>
+                        <div>${renderDarkModeButton()}</div>
+                    </div>
+                    <div id="detailsListContainer" class="flex-1 overflow-y-auto p-4 space-y-2">
+                        <div class="text-center text-xs text-slate-400 py-10">読み込み中...</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function fetchAllDMsForDetails() {
+            if (!state.currentUserData) return;
+            try {
+                const snapshot = await db.collection('dms')
+                  .where('members', 'array-contains', state.currentUserData.loginId)
+                  .get();
+                let allDms = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+                // フレンド全員分のルームをもれなく補完
+                const friends = state.currentUserData.friends || [];
+                friends.forEach(friendId => {
+                    const roomId = getRoomId(state.currentUserData.loginId, friendId);
+                    if (!allDms.some(d => d.id === roomId)) {
+                        allDms.push({
+                            id: roomId,
+                            members: [state.currentUserData.loginId, friendId],
+                            lastMessage: 'タップしてチャットを始めましょう',
+                            lastMessageTime: 0,
+                            lastSenderId: '',
+                            unread: false
+                        });
+                    }
+                });
+
+                allDms.sort((a, b) => (b.lastMessageTime || 0) - (a.lastMessageTime || 0));
+                
+                const container = document.getElementById('detailsListContainer');
+                if (!container) return;
+
+                if (allDms.length === 0) {
+                    container.innerHTML = '<div class="text-center text-xs text-slate-400 py-12">トーク履歴がありません</div>';
+                    return;
+                }
+
+                container.innerHTML = allDms.map(room => {
+                    const partnerId = room.members.find(id => id !== state.currentUserData.loginId);
+                    const partner = state.allUsers.find(u => u.loginId === partnerId) || { name: partnerId, avatar: null };
+                    const isUnread = room.lastSenderId && room.lastSenderId !== state.currentUserData.loginId && room.unread === true;
+
+                    return `
+                        <div data-room-id="${room.id}" class="room-item flex items-center justify-between p-3.5 rounded-2xl cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60 border border-slate-100 dark:border-slate-800 transition shadow-sm">
+                            <div class="flex items-center space-x-3.5 min-w-0 flex-1">
+                                ${renderAvatar(partner, 'w-12 h-12', 'text-lg')}
+                                <div class="flex-1 min-w-0 pr-2">
+                                    <div class="flex items-center justify-between">
+                                        <div class="font-bold text-slate-800 dark:text-slate-100 text-sm truncate">${escapeHtml(partner.name)}</div>
+                                        ${isUnread ? '<span class="bg-red-500 text-white text-[10px] px-2 py-0.5 rounded-full font-bold">新着</span>' : ''}
+                                    </div>
+                                    <div class="text-xs text-slate-400 truncate mt-0.5">${escapeHtml(room.lastMessage || 'タップしてチャットを開く')}</div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                container.querySelectorAll('.room-item').forEach(item => {
+                    item.onclick = async () => {
+                        const roomId = item.getAttribute('data-room-id');
+                        state.activeRoomId = roomId;
+                        state.view = 'chat';
+                        state.messages = [];
+                        try {
+                            await db.collection('dms').doc(roomId).update({ unread: false });
+                        } catch(e){}
+                        renderApp();
+                    };
+                });
+                lucide.createIcons();
+            } catch (err) {
+                console.error("Details取得エラー:", err);
+            }
         }
 
         function renderSettingsScreen(currentUser) {
@@ -413,7 +555,6 @@
             const partnerLoginId = activeRoom ? activeRoom.members.find(id => id !== currentUser.loginId) : null;
             const activePartner = state.allUsers.find(u => u.loginId === partnerLoginId) || { name: '不明', loginId: '', avatar: null };
 
-            // 初回表示時にリスナーを登録
             setTimeout(() => {
                 if (state.activeRoomId) subscribeMessages(state.activeRoomId);
             }, 0);
@@ -588,6 +729,23 @@
                 };
             }
 
+            const backToHomeFromDetailsBtn = document.getElementById('backToHomeFromDetailsBtn');
+            if (backToHomeFromDetailsBtn) {
+                backToHomeFromDetailsBtn.onclick = () => {
+                    state.view = 'home';
+                    renderApp();
+                };
+            }
+
+            const goToDetailsBtn = document.getElementById('goToDetailsBtn');
+            if (goToDetailsBtn) {
+                goToDetailsBtn.onclick = () => {
+                    state.view = 'details';
+                    renderApp();
+                    fetchAllDMsForDetails();
+                };
+            }
+
             document.querySelectorAll('[data-tab]').forEach(btn => {
                 btn.onclick = () => {
                     state.currentTab = btn.getAttribute('data-tab');
@@ -634,7 +792,11 @@
                         const roomId = getRoomId(state.currentUserData.loginId, targetId);
                         await db.collection('dms').doc(roomId).set({
                             members: [state.currentUserData.loginId, targetId],
-                            createdAt: Date.now()
+                            createdAt: Date.now(),
+                            lastMessage: '',
+                            lastMessageTime: Date.now(),
+                            lastSenderId: '',
+                            unread: false
                         }, { merge: true });
 
                         alert('フレンドに追加しました！');
@@ -657,12 +819,15 @@
                 };
             });
 
-            document.querySelectorAll('.room-item').forEach(item => {
-                item.onclick = () => {
+            document.querySelectorAll('#app .room-item').forEach(item => {
+                item.onclick = async () => {
                     const roomId = item.getAttribute('data-room-id');
                     state.activeRoomId = roomId;
                     state.view = 'chat';
                     state.messages = [];
+                    try {
+                        await db.collection('dms').doc(roomId).update({ unread: false });
+                    } catch(e){}
                     renderApp();
                 };
             });
@@ -676,6 +841,7 @@
                     }
                     state.activeRoomId = null;
                     state.view = 'home';
+                    fetchDMsOnce();
                     renderApp();
                 };
             }
@@ -756,12 +922,13 @@
                     const text = input.value.trim();
                     if (!text && !state.selectedFile) return;
 
+                    const nowTimestamp = Date.now();
                     const msgData = {
                         senderId: state.currentUserData.loginId,
                         senderName: state.currentUserData.name,
                         text: text,
                         file: state.selectedFile,
-                        createdAt: Date.now(),
+                        createdAt: nowTimestamp,
                         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                         unsent: false
                     };
@@ -772,6 +939,13 @@
 
                     try {
                         await db.collection('messages').doc(roomId).collection('chats').add(msgData);
+                        await db.collection('dms').doc(roomId).set({
+                            members: activeRoomMembers(roomId),
+                            lastMessage: text || '[ファイル]',
+                            lastMessageTime: nowTimestamp,
+                            lastSenderId: state.currentUserData.loginId,
+                            unread: true
+                        }, { merge: true });
                     } catch (err) {
                         alert('送信エラー: ' + err.message);
                     }
@@ -780,6 +954,15 @@
 
             attachUnsendEvents();
         }
+
+        // ルームIDからメンバー配列を推定するヘルパー
+        function activeRoomMembers(roomId) {
+            const ids = roomId.split('_vs_');
+            return ids.length === 2 ? ids : [state.currentUserData.loginId];
+        }
+
+        // 初期描画実行
+        renderApp();
     </script>
 </body>
 </html>
