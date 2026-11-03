@@ -45,17 +45,20 @@
             activeRoomId: null,
             selectedFile: null,
             tempAvatar: null,
+            tempGroupAvatar: null,
             currentUserData: null,
             allUsers: [],
             dms: [],
             messages: [],
-            unsubscribeMessages: null
+            unsubscribeMessages: null,
+            isGroupModalOpen: false,
+            isGroupEditModalOpen: false
         };
 
         const STORAGE_KEYS = { DARK_MODE: 'reach_dark_mode_v21' };
         function isDarkMode() { return localStorage.getItem(STORAGE_KEYS.DARK_MODE) === 'true'; }
 
-        // --- 3. 画像リサイズ ---
+        // --- 3. 画像リサイズ・アバター描画 ---
         function resizeImage(file, maxWidth = 120, maxHeight = 120, quality = 0.75) {
             return new Promise((resolve) => {
                 const reader = new FileReader();
@@ -82,11 +85,14 @@
             });
         }
 
-        function renderAvatar(user, sizeClass = 'w-10 h-10', textClass = 'text-sm') {
-            if (user && user.avatar) {
-                return `<img src="${user.avatar}" alt="${escapeHtml(user.name)}" class="${sizeClass} rounded-full object-cover shadow-sm border border-slate-200 dark:border-slate-700">`;
+        function renderAvatar(userOrGroup, sizeClass = 'w-10 h-10', textClass = 'text-sm') {
+            if (userOrGroup && userOrGroup.avatar) {
+                return `<img src="${userOrGroup.avatar}" alt="${escapeHtml(userOrGroup.name)}" class="${sizeClass} rounded-full object-cover shadow-sm border border-slate-200 dark:border-slate-700">`;
             }
-            const initial = user && user.name ? user.name.charAt(0) : '?';
+            if (userOrGroup && userOrGroup.type === 'group') {
+                return `<div class="${sizeClass} rounded-full bg-indigo-500 text-white flex items-center justify-center font-bold shadow-sm ${textClass}">👥</div>`;
+            }
+            const initial = userOrGroup && userOrGroup.name ? userOrGroup.name.charAt(0) : '?';
             return `<div class="${sizeClass} rounded-full bg-blue-500 text-white flex items-center justify-center font-bold shadow-sm ${textClass}">${initial}</div>`;
         }
 
@@ -139,7 +145,6 @@
             }
         }
 
-        // 【修正】フレンドとのルームを自動補完しつつ、直近のやり取り順に取得する
         async function fetchDMsOnce() {
             if (!state.currentUserData) return;
             try {
@@ -149,7 +154,6 @@
                 
                 let fetchedDms = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-                // フレンド全員分とのルームが存在するか確認し、なければ仮想的に補完して表示をもれなくする
                 const friends = state.currentUserData.friends || [];
                 friends.forEach(friendId => {
                     const roomId = getRoomId(state.currentUserData.loginId, friendId);
@@ -157,6 +161,7 @@
                     if (!exists) {
                         fetchedDms.push({
                             id: roomId,
+                            type: 'dm',
                             members: [state.currentUserData.loginId, friendId],
                             lastMessage: 'タップしてチャットを始めましょう',
                             lastMessageTime: 0,
@@ -166,12 +171,10 @@
                     }
                 });
 
-                // 新しい順に並び替え
                 fetchedDms.sort((a, b) => (b.lastMessageTime || 0) - (a.lastMessageTime || 0));
 
-                // 直近10件に制限
                 state.dms = fetchedDms.slice(0, 10);
-                state.allDmsCount = fetchedDms.length; // 総数保持
+                state.allDmsCount = fetchedDms.length;
             } catch (err) {
                 console.error("DM一覧取得エラー:", err);
             }
@@ -315,7 +318,7 @@
             const friendUsers = state.allUsers.filter(u => (currentUser.friends || []).includes(u.loginId));
 
             return `
-                <div class="flex-1 flex flex-col h-full bg-white dark:bg-slate-900 max-w-xl mx-auto w-full shadow-lg border-x border-slate-200 dark:border-slate-800">
+                <div class="flex-1 flex flex-col h-full bg-white dark:bg-slate-900 max-w-xl mx-auto w-full shadow-lg border-x border-slate-200 dark:border-slate-800 relative">
                     <div class="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-800/50">
                         <div class="flex items-center space-x-3">
                             ${renderAvatar(currentUser, 'w-10 h-10', 'text-base')}
@@ -348,17 +351,25 @@
                         ${state.currentTab === 'chats' ? `
                             ${state.dms.length === 0 ? '<div class="text-center text-xs text-slate-400 py-12">「フレンド」タブから友達を選んでトークを始めましょう</div>' : ''}
                             ${state.dms.map(room => {
-                                const partnerId = room.members.find(id => id !== currentUser.loginId);
-                                const partner = state.allUsers.find(u => u.loginId === partnerId) || { name: partnerId, avatar: null };
+                                const isGroup = room.type === 'group';
+                                let displayName = room.name || 'グループチャット';
+                                let displayUserOrGroup = room;
+
+                                if (!isGroup) {
+                                    const partnerId = room.members.find(id => id !== currentUser.loginId);
+                                    displayUserOrGroup = state.allUsers.find(u => u.loginId === partnerId) || { name: partnerId, avatar: null };
+                                    displayName = displayUserOrGroup.name;
+                                }
+
                                 const isUnread = room.lastSenderId && room.lastSenderId !== currentUser.loginId && room.unread === true;
 
                                 return `
                                     <div data-room-id="${room.id}" class="room-item flex items-center justify-between p-3.5 rounded-2xl cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60 border border-slate-100 dark:border-slate-800 transition shadow-sm">
                                         <div class="flex items-center space-x-3.5 min-w-0 flex-1">
-                                            ${renderAvatar(partner, 'w-12 h-12', 'text-lg')}
+                                            ${renderAvatar(displayUserOrGroup, 'w-12 h-12', 'text-lg')}
                                             <div class="flex-1 min-w-0 pr-2">
                                                 <div class="flex items-center justify-between">
-                                                    <div class="font-bold text-slate-800 dark:text-slate-100 text-sm truncate">${escapeHtml(partner.name)}</div>
+                                                    <div class="font-bold text-slate-800 dark:text-slate-100 text-sm truncate">${escapeHtml(displayName)} ${isGroup ? `<span class="text-xs font-normal text-slate-400">(${room.members.length})</span>` : ''}</div>
                                                     ${isUnread ? '<span class="bg-red-500 text-white text-[10px] px-2 py-0.5 rounded-full font-bold">新着</span>' : ''}
                                                 </div>
                                                 <div class="text-xs text-slate-400 truncate mt-0.5">${escapeHtml(room.lastMessage || 'タップしてチャットを開く')}</div>
@@ -373,6 +384,13 @@
                                 </div>
                             ` : ''}
                         ` : `
+                            <div class="flex justify-between items-center pb-2">
+                                <div class="text-xs font-bold text-slate-400 uppercase tracking-wider px-1">フレンド操作</div>
+                                <button id="openCreateGroupBtn" class="px-3 py-1.5 bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-semibold rounded-xl shadow-sm transition flex items-center space-x-1">
+                                    <span>＋ グループを作成</span>
+                                </button>
+                            </div>
+
                             <div class="p-3 mb-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-100 dark:border-slate-800 space-y-2">
                                 <div class="text-xs font-bold text-slate-700 dark:text-slate-300">＋ IDで友達追加（相互追加）</div>
                                 <form id="addFriendForm" class="flex space-x-2">
@@ -380,6 +398,7 @@
                                     <button type="submit" class="px-4 py-2.5 bg-blue-500 hover:bg-blue-600 text-white text-xs font-semibold rounded-xl shadow-sm">追加</button>
                                 </form>
                             </div>
+
                             <div class="text-xs font-bold text-slate-400 uppercase tracking-wider px-1 mb-2">フレンド一覧</div>
                             ${friendUsers.map(u => `
                                 <div class="flex items-center justify-between p-3.5 rounded-2xl bg-white dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 shadow-sm mb-2">
@@ -390,16 +409,117 @@
                                             <div class="text-xs text-slate-400">ID: ${escapeHtml(u.loginId)}</div>
                                         </div>
                                     </div>
-                                    <button data-start-chat="${escapeHtml(u.loginId)}" class="start-chat-btn px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white text-xs font-semibold rounded-sm transition">トーク</button>
+                                    <button data-start-chat="${escapeHtml(u.loginId)}" class="start-chat-btn px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white text-xs font-semibold rounded-xl shadow-sm transition">トーク</button>
                                 </div>
                             `).join('')}
                         `}
+                    </div>
+
+                    ${renderGroupModal(friendUsers)}
+                    ${renderGroupEditModal()}
+                </div>
+            `;
+        }
+
+        // --- 新規グループ作成モーダル ---
+        function renderGroupModal(friendUsers) {
+            if (!state.isGroupModalOpen) return '';
+            const avatarDisplay = state.tempGroupAvatar ? `<img src="${state.tempGroupAvatar}" class="w-16 h-16 rounded-full object-cover mx-auto">` : `<div class="w-16 h-16 rounded-full bg-indigo-500 text-white text-2xl font-bold flex items-center justify-center mx-auto">👥</div>`;
+
+            return `
+                <div class="absolute inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+                    <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-xl w-full max-w-md p-6 border border-slate-100 dark:border-slate-800 space-y-4">
+                        <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+                            <h3 class="font-bold text-slate-800 dark:text-slate-100 text-base">新しいグループを作成</h3>
+                            <button id="closeGroupModalBtn" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"><i data-lucide="x" class="w-5 h-5"></i></button>
+                        </div>
+                        <form id="createGroupForm" class="space-y-4">
+                            <div class="text-center space-y-2">
+                                ${avatarDisplay}
+                                <input type="file" id="groupAvatarFileInput" accept="image/*" class="hidden">
+                                <button type="button" id="triggerGroupAvatarBtn" class="px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-xs font-bold rounded-xl">📷 アイコン設定</button>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">グループ名</label>
+                                <input type="text" id="groupNameInput" required placeholder="例: チームA" class="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">メンバーを選択</label>
+                                <div class="max-h-40 overflow-y-auto space-y-2 border border-slate-200 dark:border-slate-700 rounded-xl p-3 bg-slate-50/50 dark:bg-slate-800/30">
+                                    ${friendUsers.length === 0 ? '<div class="text-xs text-slate-400">フレンドが追加されていません</div>' : ''}
+                                    ${friendUsers.map(u => `
+                                        <label class="flex items-center space-x-3 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 rounded-lg transition">
+                                            <input type="checkbox" name="groupMembers" value="${escapeHtml(u.loginId)}" class="w-4 h-4 text-indigo-600 rounded">
+                                            <span class="text-xs font-bold text-slate-700 dark:text-slate-200">${escapeHtml(u.name)}</span>
+                                            <span class="text-[10px] text-slate-400">(${escapeHtml(u.loginId)})</span>
+                                        </label>
+                                    `).join('')}
+                                </div>
+                            </div>
+                            <button type="submit" class="w-full py-3 bg-indigo-500 hover:bg-indigo-600 text-white font-semibold text-sm rounded-xl shadow-md transition">
+                                作成する
+                            </button>
+                        </form>
                     </div>
                 </div>
             `;
         }
 
-        // --- Details（11件目以降の過去トーク全件表示ページ） ---
+        // --- グループ編集モーダル ---
+        function renderGroupEditModal() {
+            if (!state.isGroupEditModalOpen || !state.activeRoomId) return '';
+            const activeRoom = state.dms.find(r => r.id === state.activeRoomId);
+            if (!activeRoom || activeRoom.type !== 'group') return '';
+
+            const currentMembers = activeRoom.members || [];
+            const memberCandidates = state.allUsers.filter(u => currentMembers.includes(u.loginId) || (state.currentUserData.friends || []).includes(u.loginId));
+            const avatarDisplay = state.tempGroupAvatar !== null ? state.tempGroupAvatar : activeRoom.avatar;
+
+            return `
+                <div class="absolute inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+                    <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-xl w-full max-w-md p-6 border border-slate-100 dark:border-slate-800 space-y-4">
+                        <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+                            <h3 class="font-bold text-slate-800 dark:text-slate-100 text-base">グループ設定の変更</h3>
+                            <button id="closeGroupEditModalBtn" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"><i data-lucide="x" class="w-5 h-5"></i></button>
+                        </div>
+                        <form id="editGroupForm" class="space-y-4">
+                            <div class="text-center space-y-2">
+                                ${avatarDisplay ? `<img src="${avatarDisplay}" class="w-16 h-16 rounded-full object-cover mx-auto">` : `<div class="w-16 h-16 rounded-full bg-indigo-500 text-white text-2xl font-bold flex items-center justify-center mx-auto">👥</div>`}
+                                <input type="file" id="groupEditAvatarFileInput" accept="image/*" class="hidden">
+                                <button type="button" id="triggerGroupEditAvatarBtn" class="px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-xs font-bold rounded-xl">📷 写真を変更</button>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">グループ名</label>
+                                <input type="text" id="editGroupNameInput" value="${escapeHtml(activeRoom.name || '')}" required class="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">メンバー管理 (チェックを入れたユーザーが参加)</label>
+                                <div class="max-h-40 overflow-y-auto space-y-2 border border-slate-200 dark:border-slate-700 rounded-xl p-3 bg-slate-50/50 dark:bg-slate-800/30">
+                                    ${memberCandidates.map(u => {
+                                        const isChecked = currentMembers.includes(u.loginId);
+                                        const isSelf = u.loginId === state.currentUserData.loginId;
+                                        return `
+                                            <label class="flex items-center justify-between hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 rounded-lg transition">
+                                                <div class="flex items-center space-x-2">
+                                                    <input type="checkbox" name="editGroupMembers" value="${escapeHtml(u.loginId)}" ${isChecked ? 'checked' : ''} ${isSelf ? 'disabled checked' : ''} class="w-4 h-4 text-indigo-600 rounded">
+                                                    <span class="text-xs font-bold text-slate-700 dark:text-slate-200">${escapeHtml(u.name)}</span>
+                                                </div>
+                                                <span class="text-[10px] text-slate-400">${isSelf ? '(自分)' : `ID: ${escapeHtml(u.loginId)}`}</span>
+                                            </label>
+                                        `;
+                                    }).join('')}
+                                </div>
+                            </div>
+                            <button type="submit" class="w-full py-3 bg-indigo-500 hover:bg-indigo-600 text-white font-semibold text-sm rounded-xl shadow-md transition">
+                                変更を保存
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+
+        // --- Details 画面 ---
         function renderDetailsScreen(currentUser) {
             return `
                 <div class="flex-1 flex flex-col h-full bg-white dark:bg-slate-900 max-w-xl mx-auto w-full shadow-lg border-x border-slate-200 dark:border-slate-800">
@@ -428,13 +548,13 @@
                   .get();
                 let allDms = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-                // フレンド全員分のルームをもれなく補完
                 const friends = state.currentUserData.friends || [];
                 friends.forEach(friendId => {
                     const roomId = getRoomId(state.currentUserData.loginId, friendId);
                     if (!allDms.some(d => d.id === roomId)) {
                         allDms.push({
                             id: roomId,
+                            type: 'dm',
                             members: [state.currentUserData.loginId, friendId],
                             lastMessage: 'タップしてチャットを始めましょう',
                             lastMessageTime: 0,
@@ -455,17 +575,25 @@
                 }
 
                 container.innerHTML = allDms.map(room => {
-                    const partnerId = room.members.find(id => id !== state.currentUserData.loginId);
-                    const partner = state.allUsers.find(u => u.loginId === partnerId) || { name: partnerId, avatar: null };
+                    const isGroup = room.type === 'group';
+                    let displayName = room.name || 'グループチャット';
+                    let displayUserOrGroup = room;
+
+                    if (!isGroup) {
+                        const partnerId = room.members.find(id => id !== state.currentUserData.loginId);
+                        displayUserOrGroup = state.allUsers.find(u => u.loginId === partnerId) || { name: partnerId, avatar: null };
+                        displayName = displayUserOrGroup.name;
+                    }
+
                     const isUnread = room.lastSenderId && room.lastSenderId !== state.currentUserData.loginId && room.unread === true;
 
                     return `
                         <div data-room-id="${room.id}" class="room-item flex items-center justify-between p-3.5 rounded-2xl cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60 border border-slate-100 dark:border-slate-800 transition shadow-sm">
                             <div class="flex items-center space-x-3.5 min-w-0 flex-1">
-                                ${renderAvatar(partner, 'w-12 h-12', 'text-lg')}
+                                ${renderAvatar(displayUserOrGroup, 'w-12 h-12', 'text-lg')}
                                 <div class="flex-1 min-w-0 pr-2">
                                     <div class="flex items-center justify-between">
-                                        <div class="font-bold text-slate-800 dark:text-slate-100 text-sm truncate">${escapeHtml(partner.name)}</div>
+                                        <div class="font-bold text-slate-800 dark:text-slate-100 text-sm truncate">${escapeHtml(displayName)} ${isGroup ? `<span class="text-xs font-normal text-slate-400">(${room.members.length})</span>` : ''}</div>
                                         ${isUnread ? '<span class="bg-red-500 text-white text-[10px] px-2 py-0.5 rounded-full font-bold">新着</span>' : ''}
                                     </div>
                                     <div class="text-xs text-slate-400 truncate mt-0.5">${escapeHtml(room.lastMessage || 'タップしてチャットを開く')}</div>
@@ -551,16 +679,30 @@
         }
 
         function renderChatScreen(currentUser) {
-            const activeRoom = state.dms.find(r => r.id === state.activeRoomId);
-            const partnerLoginId = activeRoom ? activeRoom.members.find(id => id !== currentUser.loginId) : null;
-            const activePartner = state.allUsers.find(u => u.loginId === partnerLoginId) || { name: '不明', loginId: '', avatar: null };
+            const activeRoom = state.dms.find(r => r.id === state.activeRoomId) || { members: [], type: 'dm' };
+            const isGroup = activeRoom.type === 'group';
+
+            let titleName = '不明';
+            let subtitleText = '';
+            let headerAvatarObj = activeRoom;
+
+            if (isGroup) {
+                titleName = activeRoom.name || 'グループチャット';
+                subtitleText = `${activeRoom.members.length} 人のメンバー`;
+            } else {
+                const partnerLoginId = activeRoom.members.find(id => id !== currentUser.loginId);
+                const activePartner = state.allUsers.find(u => u.loginId === partnerLoginId) || { name: '不明', loginId: '', avatar: null };
+                titleName = activePartner.name;
+                subtitleText = `ID: ${activePartner.loginId}`;
+                headerAvatarObj = activePartner;
+            }
 
             setTimeout(() => {
                 if (state.activeRoomId) subscribeMessages(state.activeRoomId);
             }, 0);
 
             return `
-                <div class="flex-1 flex flex-col h-full bg-slate-50 dark:bg-slate-950 max-w-xl mx-auto w-full shadow-lg border-x border-slate-200 dark:border-slate-800">
+                <div class="flex-1 flex flex-col h-full bg-slate-50 dark:bg-slate-950 max-w-xl mx-auto w-full shadow-lg border-x border-slate-200 dark:border-slate-800 relative">
                     <div class="h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 flex items-center justify-between shadow-sm flex-shrink-0">
                         <div class="flex items-center space-x-3">
                             <button id="backToHomeBtn" class="p-2 -ml-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition flex items-center space-x-1">
@@ -568,14 +710,21 @@
                                 <span class="text-sm font-semibold">戻る</span>
                             </button>
                             <div class="flex items-center space-x-2">
-                                ${renderAvatar(activePartner, 'w-9 h-9', 'text-sm')}
+                                ${renderAvatar(headerAvatarObj, 'w-9 h-9', 'text-sm')}
                                 <div>
-                                    <h3 class="font-bold text-slate-800 dark:text-slate-100 text-sm">${escapeHtml(activePartner.name)}</h3>
-                                    <p class="text-[10px] text-slate-400">ID: ${escapeHtml(activePartner.loginId)}</p>
+                                    <h3 class="font-bold text-slate-800 dark:text-slate-100 text-sm">${escapeHtml(titleName)}</h3>
+                                    <p class="text-[10px] text-slate-400">${escapeHtml(subtitleText)}</p>
                                 </div>
                             </div>
                         </div>
-                        <div>${renderDarkModeButton()}</div>
+                        <div class="flex items-center space-x-1">
+                            ${isGroup ? `
+                                <button id="openGroupEditBtn" class="p-2 text-slate-400 hover:text-indigo-500 rounded-lg transition" title="グループ設定">
+                                    <i data-lucide="settings" class="w-5 h-5"></i>
+                                </button>
+                            ` : ''}
+                            ${renderDarkModeButton()}
+                        </div>
                     </div>
 
                     <div id="messageContainer" class="flex-1 overflow-y-auto p-4 space-y-4">
@@ -635,6 +784,8 @@
                             </button>
                         </form>
                     </div>
+
+                    ${renderGroupEditModal()}
                 </div>
             `;
         }
@@ -746,6 +897,156 @@
                 };
             }
 
+            // 新規グループ作成アバター
+            const triggerGroupAvatarBtn = document.getElementById('triggerGroupAvatarBtn');
+            const groupAvatarFileInput = document.getElementById('groupAvatarFileInput');
+            if (triggerGroupAvatarBtn && groupAvatarFileInput) {
+                triggerGroupAvatarBtn.onclick = () => groupAvatarFileInput.click();
+                groupAvatarFileInput.onchange = async (e) => {
+                    const file = e.target.files[0];
+                    if (file) {
+                        state.tempGroupAvatar = await resizeImage(file, 150, 150, 0.8);
+                        renderApp();
+                    }
+                };
+            }
+
+            // グループ作成モーダル開閉
+            const openCreateGroupBtn = document.getElementById('openCreateGroupBtn');
+            if (openCreateGroupBtn) {
+                openCreateGroupBtn.onclick = () => {
+                    state.isGroupModalOpen = true;
+                    state.tempGroupAvatar = null;
+                    renderApp();
+                };
+            }
+
+            const closeGroupModalBtn = document.getElementById('closeGroupModalBtn');
+            if (closeGroupModalBtn) {
+                closeGroupModalBtn.onclick = () => {
+                    state.isGroupModalOpen = false;
+                    state.tempGroupAvatar = null;
+                    renderApp();
+                };
+            }
+
+            // グループ編集モーダル開閉
+            const openGroupEditBtn = document.getElementById('openGroupEditBtn');
+            if (openGroupEditBtn) {
+                openGroupEditBtn.onclick = () => {
+                    state.isGroupEditModalOpen = true;
+                    state.tempGroupAvatar = null;
+                    renderApp();
+                };
+            }
+
+            const closeGroupEditModalBtn = document.getElementById('closeGroupEditModalBtn');
+            if (closeGroupEditModalBtn) {
+                closeGroupEditModalBtn.onclick = () => {
+                    state.isGroupEditModalOpen = false;
+                    state.tempGroupAvatar = null;
+                    renderApp();
+                };
+            }
+
+            // グループ編集アバター
+            const triggerGroupEditAvatarBtn = document.getElementById('triggerGroupEditAvatarBtn');
+            const groupEditAvatarFileInput = document.getElementById('groupEditAvatarFileInput');
+            if (triggerGroupEditAvatarBtn && groupEditAvatarFileInput) {
+                triggerGroupEditAvatarBtn.onclick = () => groupEditAvatarFileInput.click();
+                groupEditAvatarFileInput.onchange = async (e) => {
+                    const file = e.target.files[0];
+                    if (file) {
+                        state.tempGroupAvatar = await resizeImage(file, 150, 150, 0.8);
+                        renderApp();
+                    }
+                };
+            }
+
+            // グループ編集フォーム送信（メンバー追加・削除・名前変更・アバター変更）
+            const editGroupForm = document.getElementById('editGroupForm');
+            if (editGroupForm) {
+                editGroupForm.onsubmit = async (e) => {
+                    e.preventDefault();
+                    const newName = document.getElementById('editGroupNameInput').value.trim();
+                    const checkboxes = document.querySelectorAll('input[name="editGroupMembers"]:checked');
+                    const updatedMembers = Array.from(checkboxes).map(cb => cb.value);
+
+                    if (updatedMembers.length < 1) {
+                        alert('メンバーは少なくとも1名必要です。');
+                        return;
+                    }
+
+                    const updatePayload = {
+                        name: newName,
+                        members: updatedMembers
+                    };
+
+                    if (state.tempGroupAvatar !== null) {
+                        updatePayload.avatar = state.tempGroupAvatar;
+                    }
+
+                    try {
+                        await db.collection('dms').doc(state.activeRoomId).update(updatePayload);
+                        state.isGroupEditModalOpen = false;
+                        state.tempGroupAvatar = null;
+                        alert('グループ設定を更新しました！');
+                        await fetchDMsOnce();
+                        renderApp();
+                    } catch (err) {
+                        alert('更新エラー: ' + err.message);
+                    }
+                };
+            }
+
+            // 新規グループ作成フォーム送信
+            const createGroupForm = document.getElementById('createGroupForm');
+            if (createGroupForm) {
+                createGroupForm.onsubmit = async (e) => {
+                    e.preventDefault();
+                    const name = document.getElementById('groupNameInput').value.trim();
+                    const checkboxes = document.querySelectorAll('input[name="groupMembers"]:checked');
+                    const selectedMembers = Array.from(checkboxes).map(cb => cb.value);
+
+                    if (!name) {
+                        alert('グループ名を入力してください。');
+                        return;
+                    }
+
+                    const myId = state.currentUserData.loginId;
+                    const members = Array.from(new Set([myId, ...selectedMembers]));
+
+                    if (members.length < 2) {
+                        alert('自分以外のメンバーを少なくとも1名選んでください。');
+                        return;
+                    }
+
+                    try {
+                        const newRoomRef = db.collection('dms').doc();
+                        await newRoomRef.set({
+                            type: 'group',
+                            name: name,
+                            avatar: state.tempGroupAvatar || null,
+                            members: members,
+                            ownerId: myId,
+                            createdAt: Date.now(),
+                            lastMessage: 'グループが作成されました',
+                            lastMessageTime: Date.now(),
+                            lastSenderId: myId,
+                            unread: false
+                        });
+
+                        state.isGroupModalOpen = false;
+                        state.tempGroupAvatar = null;
+                        alert('グループを作成しました！');
+                        await fetchDMsOnce();
+                        renderApp();
+                    } catch (err) {
+                        alert('グループ作成エラー: ' + err.message);
+                    }
+                };
+            }
+
             document.querySelectorAll('[data-tab]').forEach(btn => {
                 btn.onclick = () => {
                     state.currentTab = btn.getAttribute('data-tab');
@@ -791,6 +1092,7 @@
 
                         const roomId = getRoomId(state.currentUserData.loginId, targetId);
                         await db.collection('dms').doc(roomId).set({
+                            type: 'dm',
                             members: [state.currentUserData.loginId, targetId],
                             createdAt: Date.now(),
                             lastMessage: '',
@@ -940,7 +1242,6 @@
                     try {
                         await db.collection('messages').doc(roomId).collection('chats').add(msgData);
                         await db.collection('dms').doc(roomId).set({
-                            members: activeRoomMembers(roomId),
                             lastMessage: text || '[ファイル]',
                             lastMessageTime: nowTimestamp,
                             lastSenderId: state.currentUserData.loginId,
@@ -953,12 +1254,6 @@
             }
 
             attachUnsendEvents();
-        }
-
-        // ルームIDからメンバー配列を推定するヘルパー
-        function activeRoomMembers(roomId) {
-            const ids = roomId.split('_vs_');
-            return ids.length === 2 ? ids : [state.currentUserData.loginId];
         }
 
         // 初期描画実行
