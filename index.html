@@ -131,13 +131,10 @@
             state.allUsers = snapshot.docs.map(doc => doc.data());
         }
 
-        // 【省エネ・直近10件取得】開いた時だけ一回読み込んでコストを完全固定
         async function fetchDMsOnce() {
             if (!state.currentUserData) return;
             const snapshot = await db.collection('dms')
               .where('members', 'array-contains', state.currentUserData.loginId)
-              .orderBy('lastMessageTime', 'desc')
-              .limit(10)
               .get();
             state.dms = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         }
@@ -151,6 +148,7 @@
                     const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     state.messages = docs.reverse();
                     
+                    // チャット画面にいる時は、画面全体を再描画せずメッセージエリアだけを更新して入力欄を守る
                     if (state.view === 'chat') {
                         updateChatMessagesOnly();
                     } else {
@@ -313,29 +311,19 @@
                             ${state.dms.map(room => {
                                 const partnerId = room.members.find(id => id !== currentUser.loginId);
                                 const partner = state.allUsers.find(u => u.loginId === partnerId) || { name: partnerId, avatar: null };
-                                // 開いた瞬間チェックする新着判定（自分以外が送った未読メッセージがあるか）
-                                const isUnread = room.lastSenderId && room.lastSenderId !== currentUser.loginId && room.unread === true;
 
                                 return `
                                     <div data-room-id="${room.id}" class="room-item flex items-center justify-between p-3.5 rounded-2xl cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60 border border-slate-100 dark:border-slate-800 transition shadow-sm">
                                         <div class="flex items-center space-x-3.5 min-w-0 flex-1">
                                             ${renderAvatar(partner, 'w-12 h-12', 'text-lg')}
                                             <div class="flex-1 min-w-0 pr-2">
-                                                <div class="flex items-center justify-between">
-                                                    <div class="font-bold text-slate-800 dark:text-slate-100 text-sm truncate">${escapeHtml(partner.name)}</div>
-                                                    ${isUnread ? '<span class="bg-red-500 text-white text-[10px] px-2 py-0.5 rounded-full font-bold">新着</span>' : ''}
-                                                </div>
-                                                <div class="text-xs text-slate-400 truncate mt-0.5">${escapeHtml(room.lastMessage || 'タップしてチャットを開く')}</div>
+                                                <div class="font-bold text-slate-800 dark:text-slate-100 text-sm truncate">${escapeHtml(partner.name)}</div>
+                                                <div class="text-xs text-slate-400">タップしてチャットを開く</div>
                                             </div>
                                         </div>
                                     </div>
                                 `;
                             }).join('')}
-                            ${state.dms.length >= 10 ? `
-                                <div class="text-center pt-2 pb-4">
-                                    <button onclick="alert('Detailsページ（すべての過去履歴表示）は今後実装予定です')" class="text-xs text-blue-500 hover:underline">すべての過去履歴を見る (Details)</button>
-                                </div>
-                            ` : ''}
                         ` : `
                             <div class="p-3 mb-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-100 dark:border-slate-800 space-y-2">
                                 <div class="text-xs font-bold text-slate-700 dark:text-slate-300">＋ IDで友達追加（相互追加）</div>
@@ -425,6 +413,7 @@
             const partnerLoginId = activeRoom ? activeRoom.members.find(id => id !== currentUser.loginId) : null;
             const activePartner = state.allUsers.find(u => u.loginId === partnerLoginId) || { name: '不明', loginId: '', avatar: null };
 
+            // 初回表示時にリスナーを登録
             setTimeout(() => {
                 if (state.activeRoomId) subscribeMessages(state.activeRoomId);
             }, 0);
@@ -514,9 +503,7 @@
                 btn.onclick = async (e) => {
                     e.stopPropagation();
                     const msgId = btn.getAttribute('data-unsend-id');
-                    if (!msgId || !state.activeRoomId) return;
-
-                    if (confirm('このメッセージの送信を取り消しますか？')) {
+                    if (confirm('このメッセージを取り消しますか？')) {
                         try {
                             await db.collection('messages').doc(state.activeRoomId).collection('chats').doc(msgId).update({
                                 unsent: true,
@@ -524,29 +511,24 @@
                                 file: null
                             });
                         } catch (err) {
-                            console.error('送信取り消しエラー:', err);
-                            alert('送信の取り消しに失敗しました。');
+                            alert('エラー: ' + err.message);
                         }
                     }
                 };
             });
         }
 
-        // --- 6. イベントハンドラーの登録 ---
+        // --- 6. イベントハンドラ ---
         function attachEvents() {
-            attachUnsendEvents();
-
-            // ダークモード切替
-            const dmBtn = document.getElementById('globalDarkModeToggleBtn');
-            if (dmBtn) {
-                dmBtn.onclick = () => {
+            const globalDarkBtn = document.getElementById('globalDarkModeToggleBtn');
+            if (globalDarkBtn) {
+                globalDarkBtn.onclick = () => {
                     const current = isDarkMode();
                     localStorage.setItem(STORAGE_KEYS.DARK_MODE, !current);
                     renderApp();
                 };
             }
 
-            // 認証モード切替
             const toggleModeBtn = document.getElementById('toggleModeBtn');
             if (toggleModeBtn) {
                 toggleModeBtn.onclick = () => {
@@ -555,62 +537,39 @@
                 };
             }
 
-            // 認証フォーム送信
             const authForm = document.getElementById('authForm');
             if (authForm) {
                 authForm.onsubmit = async (e) => {
                     e.preventDefault();
                     const loginId = document.getElementById('loginIdInput').value.trim();
                     const password = document.getElementById('passwordInput').value;
-                    const email = `${loginId.toLowerCase()}@reach.app`;
+                    const email = `${loginId}@shinagawa.org`;
 
                     try {
                         if (state.isSignupMode) {
-                            const name = document.getElementById('displayNameInput').value.trim();
-                            const checkDoc = await db.collection('users').doc(loginId).get();
-                            if (checkDoc.exists) {
-                                alert('このログインIDはすでに使用されています。');
-                                return;
-                            }
-
+                            const displayName = document.getElementById('displayNameInput').value.trim();
                             const cred = await auth.createUserWithEmailAndPassword(email, password);
-                            const userData = {
+                            await db.collection('users').doc(cred.user.uid).set({
                                 uid: cred.user.uid,
                                 loginId: loginId,
-                                name: name || loginId,
+                                name: displayName,
                                 friends: [],
                                 avatar: null
-                            };
-                            await db.collection('users').doc(loginId).set(userData);
-                            state.currentUserData = userData;
+                            });
                         } else {
                             await auth.signInWithEmailAndPassword(email, password);
                         }
                     } catch (err) {
-                        console.error('認証エラー:', err);
-                        alert('認証に失敗しました: ' + err.message);
+                        alert('認証エラー: ' + err.message);
                     }
                 };
             }
 
-            // ログアウト
             const logoutBtn = document.getElementById('logoutBtn');
             if (logoutBtn) {
-                logoutBtn.onclick = async () => {
-                    if (state.unsubscribeMessages) state.unsubscribeMessages();
-                    await auth.signOut();
-                };
+                logoutBtn.onclick = () => auth.signOut();
             }
 
-            // タブ切替
-            document.querySelectorAll('[data-tab]').forEach(btn => {
-                btn.onclick = () => {
-                    state.currentTab = btn.getAttribute('data-tab');
-                    renderApp();
-                };
-            });
-
-            // 設定画面へ移動
             const goToSettingsBtn = document.getElementById('goToSettingsBtn');
             if (goToSettingsBtn) {
                 goToSettingsBtn.onclick = () => {
@@ -620,7 +579,6 @@
                 };
             }
 
-            // 設定からホームへ戻る
             const backToHomeFromSettingsBtn = document.getElementById('backToHomeFromSettingsBtn');
             if (backToHomeFromSettingsBtn) {
                 backToHomeFromSettingsBtn.onclick = () => {
@@ -630,140 +588,85 @@
                 };
             }
 
-            // プロフィール設定のアバター画像選択トリガー
-            const triggerAvatarBtn = document.getElementById('triggerAvatarBtn');
-            const avatarFileInput = document.getElementById('avatarFileInput');
-            if (triggerAvatarBtn && avatarFileInput) {
-                triggerAvatarBtn.onclick = () => avatarFileInput.click();
-                avatarFileInput.onchange = async (e) => {
-                    const file = e.target.files[0];
-                    if (file) {
-                        const base64 = await resizeImage(file, 150, 150, 0.8);
-                        state.tempAvatar = base64;
-                        renderApp();
-                    }
+            document.querySelectorAll('[data-tab]').forEach(btn => {
+                btn.onclick = () => {
+                    state.currentTab = btn.getAttribute('data-tab');
+                    renderApp();
                 };
-            }
+            });
 
-            // プロフィール保存
-            const profileForm = document.getElementById('profileForm');
-            if (profileForm) {
-                profileForm.onsubmit = async (e) => {
-                    e.preventDefault();
-                    const newName = document.getElementById('editNameInput').value.trim();
-                    const loginId = state.currentUserData.loginId;
-
-                    const updateData = { name: newName };
-                    if (state.tempAvatar !== null) {
-                        updateData.avatar = state.tempAvatar;
-                    }
-
-                    try {
-                        await db.collection('users').doc(loginId).update(updateData);
-                        state.currentUserData = { ...state.currentUserData, ...updateData };
-                        state.tempAvatar = null;
-                        state.view = 'home';
-                        await fetchAllUsers();
-                        renderApp();
-                        alert('プロフィールを更新しました！');
-                    } catch (err) {
-                        console.error('更新エラー:', err);
-                        alert('更新に失敗しました。');
-                    }
-                };
-            }
-
-            // 友達追加フォーム（相互追加）
             const addFriendForm = document.getElementById('addFriendForm');
             if (addFriendForm) {
                 addFriendForm.onsubmit = async (e) => {
                     e.preventDefault();
                     const targetId = document.getElementById('friendIdInput').value.trim();
-                    const myId = state.currentUserData.loginId;
-
-                    if (targetId === myId) {
-                        alert('自分自身を追加することはできません。');
+                    if (!targetId || targetId === state.currentUserData.loginId) {
+                        alert('有効なログインIDを入力してください。');
                         return;
                     }
 
-                    const targetDoc = await db.collection('users').doc(targetId).get();
-                    if (!targetDoc.exists) {
-                        alert('指定されたIDのユーザーが見つかりません。');
+                    const targetUser = state.allUsers.find(u => u.loginId === targetId);
+                    if (!targetUser) {
+                        alert('ユーザーが見つかりませんでした。');
                         return;
                     }
 
                     const myFriends = state.currentUserData.friends || [];
                     if (myFriends.includes(targetId)) {
-                        alert('すでにフレンドに追加されています。');
+                        alert('すでにフレンドです。');
                         return;
                     }
 
                     try {
-                        const newMyFriends = [...myFriends, targetId];
-                        await db.collection('users').doc(myId).update({ friends: newMyFriends });
+                        const myUid = auth.currentUser.uid;
+                        const targetUid = targetUser.uid;
 
-                        const targetData = targetDoc.data();
-                        const targetFriends = targetData.friends || [];
-                        if (!targetFriends.includes(myId)) {
-                            await db.collection('users').doc(targetId).update({ friends: [...targetFriends, myId] });
-                        }
+                        const newMyFriends = [...myFriends, targetId];
+                        const targetFriends = targetUser.friends || [];
+                        const newTargetFriends = [...targetFriends, state.currentUserData.loginId];
+
+                        await db.collection('users').doc(myUid).update({ friends: newMyFriends });
+                        await db.collection('users').doc(targetUid).update({ friends: newTargetFriends });
 
                         state.currentUserData.friends = newMyFriends;
-                        await fetchAllUsers();
+                        targetUser.friends = newTargetFriends;
+
+                        const roomId = getRoomId(state.currentUserData.loginId, targetId);
+                        await db.collection('dms').doc(roomId).set({
+                            members: [state.currentUserData.loginId, targetId],
+                            createdAt: Date.now()
+                        }, { merge: true });
+
+                        alert('フレンドに追加しました！');
+                        await fetchDMsOnce();
                         renderApp();
-                        alert('フレンドを追加しました！');
                     } catch (err) {
-                        console.error('フレンド追加エラー:', err);
-                        alert('フレンド追加に失敗しました。');
+                        alert('エラー: ' + err.message);
                     }
                 };
             }
 
-            // トークを開始（ルーム作成 or 既存オープン）
             document.querySelectorAll('.start-chat-btn').forEach(btn => {
-                btn.onclick = async () => {
-                    const partnerId = btn.getAttribute('data-start-chat');
-                    const myId = state.currentUserData.loginId;
-                    const roomId = getRoomId(myId, partnerId);
-
-                    const roomRef = db.collection('dms').doc(roomId);
-                    const roomSnap = await roomRef.get();
-
-                    if (!roomSnap.exists) {
-                        await roomRef.set({
-                            members: [myId, partnerId],
-                            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-                            lastMessage: '',
-                            lastMessageTime: '',
-                            lastSenderId: '',
-                            unread: false
-                        });
-                        await fetchDMsOnce();
-                    }
-
+                btn.onclick = () => {
+                    const targetLoginId = btn.getAttribute('data-start-chat');
+                    const roomId = getRoomId(state.currentUserData.loginId, targetLoginId);
                     state.activeRoomId = roomId;
                     state.view = 'chat';
+                    state.messages = [];
                     renderApp();
                 };
             });
 
-            // チャットルームリストからのクリック
             document.querySelectorAll('.room-item').forEach(item => {
-                item.onclick = async () => {
+                item.onclick = () => {
                     const roomId = item.getAttribute('data-room-id');
                     state.activeRoomId = roomId;
                     state.view = 'chat';
-                    
-                    // ルームを開いた瞬間に未読フラグをクリア
-                    try {
-                        await db.collection('dms').doc(roomId).update({ unread: false });
-                    } catch(e){}
-
+                    state.messages = [];
                     renderApp();
                 };
             });
 
-            // チャット画面からホームへ戻る
             const backToHomeBtn = document.getElementById('backToHomeBtn');
             if (backToHomeBtn) {
                 backToHomeBtn.onclick = () => {
@@ -773,13 +676,47 @@
                     }
                     state.activeRoomId = null;
                     state.view = 'home';
-                    state.selectedFile = null;
-                    fetchDMsOnce();
                     renderApp();
                 };
             }
 
-            // ファイル添付トリガー
+            const triggerAvatarBtn = document.getElementById('triggerAvatarBtn');
+            const avatarFileInput = document.getElementById('avatarFileInput');
+            if (triggerAvatarBtn && avatarFileInput) {
+                triggerAvatarBtn.onclick = () => avatarFileInput.click();
+                avatarFileInput.onchange = async (e) => {
+                    const file = e.target.files[0];
+                    if (file) {
+                        state.tempAvatar = await resizeImage(file, 150, 150, 0.8);
+                        renderApp();
+                    }
+                };
+            }
+
+            const profileForm = document.getElementById('profileForm');
+            if (profileForm) {
+                profileForm.onsubmit = async (e) => {
+                    e.preventDefault();
+                    const newName = document.getElementById('editNameInput').value.trim();
+                    const updateData = { name: newName };
+                    if (state.tempAvatar !== null) {
+                        updateData.avatar = state.tempAvatar;
+                    }
+
+                    try {
+                        await db.collection('users').doc(auth.currentUser.uid).update(updateData);
+                        state.currentUserData.name = newName;
+                        if (updateData.avatar) state.currentUserData.avatar = updateData.avatar;
+                        state.tempAvatar = null;
+                        alert('プロフィールを更新しました！');
+                        state.view = 'home';
+                        renderApp();
+                    } catch (err) {
+                        alert('エラー: ' + err.message);
+                    }
+                };
+            }
+
             const triggerChatFileBtn = document.getElementById('triggerChatFileBtn');
             const chatFileInput = document.getElementById('chatFileInput');
             if (triggerChatFileBtn && chatFileInput) {
@@ -787,7 +724,7 @@
                 chatFileInput.onchange = async (e) => {
                     const file = e.target.files[0];
                     if (file) {
-                        let fileData = '';
+                        let fileData;
                         if (file.type.startsWith('image/')) {
                             fileData = await resizeImage(file, 800, 800, 0.7);
                         } else {
@@ -803,7 +740,6 @@
                 };
             }
 
-            // 添付ファイルキャンセル
             const cancelFileBtn = document.getElementById('cancelFileBtn');
             if (cancelFileBtn) {
                 cancelFileBtn.onclick = () => {
@@ -812,53 +748,38 @@
                 };
             }
 
-            // メッセージ送信フォーム
             const messageForm = document.getElementById('messageForm');
             if (messageForm) {
                 messageForm.onsubmit = async (e) => {
                     e.preventDefault();
                     const input = document.getElementById('messageInput');
                     const text = input.value.trim();
-                    const file = state.selectedFile;
+                    if (!text && !state.selectedFile) return;
 
-                    if (!text && !file) return;
-
-                    const now = new Date();
-                    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-
-                    const messageData = {
+                    const msgData = {
                         senderId: state.currentUserData.loginId,
                         senderName: state.currentUserData.name,
                         text: text,
-                        file: file,
-                        time: timeStr,
-                        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                        file: state.selectedFile,
+                        createdAt: Date.now(),
+                        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                         unsent: false
                     };
 
-                    try {
-                        const roomId = state.activeRoomId;
-                        await db.collection('messages').doc(roomId).collection('chats').add(messageData);
-                        await db.collection('dms').doc(roomId).update({
-                            lastMessage: text || '[ファイル]',
-                            lastMessageTime: firebase.firestore.FieldValue.serverTimestamp(),
-                            lastSenderId: state.currentUserData.loginId,
-                            unread: true // 新着フラグを立てる
-                        });
+                    const roomId = state.activeRoomId;
+                    input.value = '';
+                    state.selectedFile = null;
 
-                        input.value = '';
-                        state.selectedFile = null;
-                        renderApp();
+                    try {
+                        await db.collection('messages').doc(roomId).collection('chats').add(msgData);
                     } catch (err) {
-                        console.error('メッセージ送信エラー:', err);
-                        alert('送信に失敗しました。');
+                        alert('送信エラー: ' + err.message);
                     }
                 };
             }
-        }
 
-        // 初期描画実行
-        renderApp();
+            attachUnsendEvents();
+        }
     </script>
 </body>
 </html>
