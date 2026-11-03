@@ -16,7 +16,6 @@
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-messaging-compat.js"></script>
 </head>
 <body class="bg-slate-100 dark:bg-slate-950 h-screen flex flex-col overflow-hidden text-slate-800 dark:text-slate-100 transition-colors">
 
@@ -37,9 +36,6 @@
         firebase.initializeApp(firebaseConfig);
         const auth = firebase.auth();
         const db = firebase.firestore();
-        const messaging = firebase.messaging();
-
-        const VAPID_KEY = "YOUR_WEB_PUSH_VAPID_KEY_HERE"; 
 
         // --- 2. アプリケーション状態 ---
         const state = {
@@ -53,11 +49,7 @@
             allUsers: [],
             dms: [],
             messages: [],
-            readStatus: {},      
-            lastMessages: {},    
-            unsubscribeMessages: null,
-            unsubscribeDMs: null,
-            unsubscribeLastMsgs: []
+            unsubscribeMessages: null
         };
 
         const STORAGE_KEYS = { DARK_MODE: 'reach_dark_mode_v21' };
@@ -116,29 +108,7 @@
             });
         }
 
-        // --- 4. FCM通知権限の取得とトークン保存 ---
-        async function requestNotificationPermission() {
-            try {
-                const permission = await Notification.requestPermission();
-                if (permission === 'granted') {
-                    const registration = await navigator.serviceWorker.register('firebase-messaging-sw.js');
-                    const token = await messaging.getToken({
-                        vapidKey: VAPID_KEY,
-                        serviceWorkerRegistration: registration
-                    });
-
-                    if (token && auth.currentUser) {
-                        await db.collection('users').doc(auth.currentUser.uid).update({
-                            fcmToken: token
-                        });
-                    }
-                }
-            } catch (error) {
-                console.error('FCMトークン取得エラー:', error);
-            }
-        }
-
-        // --- 5. Firebase認証・データ同期 ---
+        // --- 4. Firebase認証・データ取得（省エネ版） ---
         auth.onAuthStateChanged(async (user) => {
             if (user) {
                 const doc = await db.collection('users').doc(user.uid).get();
@@ -147,15 +117,11 @@
                 } else {
                     state.currentUserData = { uid: user.uid, loginId: user.email.split('@')[0], name: '名無し', friends: [], avatar: null };
                 }
-                fetchAllUsers();
-                fetchDMsAndReadStatus();
-                requestNotificationPermission();
+                await fetchAllUsers();
+                await fetchDMsOnce();
             } else {
                 state.currentUserData = null;
                 if (state.unsubscribeMessages) state.unsubscribeMessages();
-                if (state.unsubscribeDMs) state.unsubscribeDMs();
-                state.unsubscribeLastMsgs.forEach(unsub => unsub());
-                state.unsubscribeLastMsgs = [];
             }
             renderApp();
         });
@@ -163,49 +129,20 @@
         async function fetchAllUsers() {
             const snapshot = await db.collection('users').get();
             state.allUsers = snapshot.docs.map(doc => doc.data());
-            renderApp();
         }
 
-        function fetchDMsAndReadStatus() {
+        // 省エネのため onSnapshot ではなく一度きりの get() に変更
+        async function fetchDMsOnce() {
             if (!state.currentUserData) return;
-            state.unsubscribeDMs = db.collection('dms')
+            const snapshot = await db.collection('dms')
               .where('members', 'array-contains', state.currentUserData.loginId)
-              .onSnapshot(snapshot => {
-                  state.dms = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                  
-                  state.unsubscribeLastMsgs.forEach(unsub => unsub());
-                  state.unsubscribeLastMsgs = [];
-
-                  state.dms.forEach(room => {
-                      const unsub = db.collection('messages').doc(room.id).collection('chats')
-                          .orderBy('createdAt', 'desc')
-                          .limit(1)
-                          .onSnapshot(msgSnap => {
-                              if (!msgSnap.empty) {
-                                  state.lastMessages[room.id] = msgSnap.docs[0].data();
-                              } else {
-                                  state.lastMessages[room.id] = null;
-                              }
-                              renderApp();
-                          });
-                      state.unsubscribeLastMsgs.push(unsub);
-                  });
-
-                  renderApp();
-              });
-
-            db.collection('readStatus').onSnapshot(snapshot => {
-                const statusMap = {};
-                snapshot.docs.forEach(doc => {
-                    statusMap[doc.id] = doc.data();
-                });
-                state.readStatus = statusMap;
-                renderApp();
-            });
+              .get();
+            state.dms = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         }
 
         function subscribeMessages(roomId) {
             if (state.unsubscribeMessages) state.unsubscribeMessages();
+            // 開いているルームだけ、直近50件をリアルタイム監視
             state.unsubscribeMessages = db.collection('messages').doc(roomId).collection('chats')
                 .orderBy('createdAt', 'desc')
                 .limit(50)
@@ -213,24 +150,13 @@
                     const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     state.messages = docs.reverse();
                     renderApp();
-                    
-                    if (state.messages.length > 0 && state.currentUserData) {
-                        const lastMsg = state.messages[state.messages.length - 1];
-                        markRoomAsRead(roomId, state.currentUserData.loginId, lastMsg.createdAt);
-                    }
 
                     const container = document.getElementById('messageContainer');
                     if (container) container.scrollTop = container.scrollHeight;
                 });
         }
 
-        async function markRoomAsRead(roomId, loginId, msgTimestamp) {
-            await db.collection('readStatus').doc(roomId).set({
-                [loginId]: msgTimestamp
-            }, { merge: true });
-        }
-
-        // --- 6. 描画ルーター ---
+        // --- 5. 描画ルーター ---
         window.renderApp = function() {
             if (isDarkMode()) {
                 document.documentElement.classList.add('dark');
@@ -304,16 +230,6 @@
         function renderHomeScreen(currentUser) {
             const friendUsers = state.allUsers.filter(u => (currentUser.friends || []).includes(u.loginId));
 
-            let totalUnread = 0;
-            state.dms.forEach(room => {
-                const lastMsg = state.lastMessages[room.id];
-                const roomReadInfo = state.readStatus[room.id] || {};
-                const myLastRead = roomReadInfo[currentUser.loginId] || 0;
-                if (lastMsg && lastMsg.senderId !== currentUser.loginId && lastMsg.createdAt > myLastRead && !lastMsg.unsent) {
-                    totalUnread++;
-                }
-            });
-
             return `
                 <div class="flex-1 flex flex-col h-full bg-white dark:bg-slate-900 max-w-xl mx-auto w-full shadow-lg border-x border-slate-200 dark:border-slate-800">
                     <div class="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-800/50">
@@ -336,9 +252,8 @@
                     </div>
 
                     <div class="flex border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/20 p-2">
-                        <button data-tab="chats" class="flex-1 py-3 text-sm font-semibold rounded-xl transition relative ${state.currentTab === 'chats' ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-sm' : 'text-slate-500 dark:text-slate-400'}">
+                        <button data-tab="chats" class="flex-1 py-3 text-sm font-semibold rounded-xl transition ${state.currentTab === 'chats' ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-sm' : 'text-slate-500 dark:text-slate-400'}">
                             トーク
-                            ${totalUnread > 0 ? `<span class="absolute top-2 right-6 w-5 h-5 bg-blue-500 text-white text-[11px] font-bold rounded-full flex items-center justify-center">${totalUnread}</span>` : ''}
                         </button>
                         <button data-tab="friends" class="flex-1 py-3 text-sm font-semibold rounded-xl transition ${state.currentTab === 'friends' ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-sm' : 'text-slate-500 dark:text-slate-400'}">
                             フレンド (${friendUsers.length})
@@ -351,26 +266,16 @@
                             ${state.dms.map(room => {
                                 const partnerId = room.members.find(id => id !== currentUser.loginId);
                                 const partner = state.allUsers.find(u => u.loginId === partnerId) || { name: partnerId, avatar: null };
-                                const lastMsg = state.lastMessages[room.id];
-                                const roomReadInfo = state.readStatus[room.id] || {};
-                                const myLastRead = roomReadInfo[currentUser.loginId] || 0;
-                                const hasUnread = lastMsg && lastMsg.senderId !== currentUser.loginId && lastMsg.createdAt > myLastRead && !lastMsg.unsent;
 
                                 return `
                                     <div data-room-id="${room.id}" class="room-item flex items-center justify-between p-3.5 rounded-2xl cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60 border border-slate-100 dark:border-slate-800 transition shadow-sm">
                                         <div class="flex items-center space-x-3.5 min-w-0 flex-1">
                                             ${renderAvatar(partner, 'w-12 h-12', 'text-lg')}
                                             <div class="flex-1 min-w-0 pr-2">
-                                                <div class="flex items-center justify-between mb-0.5">
-                                                    <span class="font-bold text-slate-800 dark:text-slate-100 text-sm truncate">${escapeHtml(partner.name)}</span>
-                                                    ${lastMsg ? `<span class="text-[11px] text-slate-400 flex-shrink-0">${escapeHtml(lastMsg.time)}</span>` : ''}
-                                                </div>
-                                                <div class="text-xs text-slate-500 dark:text-slate-400 truncate">
-                                                    ${lastMsg ? (lastMsg.unsent ? 'メッセージの送信を取り消しました' : (lastMsg.file ? `📎 [ファイル] ${escapeHtml(lastMsg.file.name)}` : escapeHtml(lastMsg.text))) : 'メッセージなし'}
-                                                </div>
+                                                <div class="font-bold text-slate-800 dark:text-slate-100 text-sm truncate">${escapeHtml(partner.name)}</div>
+                                                <div class="text-xs text-slate-400">タップしてチャットを開く</div>
                                             </div>
                                         </div>
-                                        ${hasUnread ? `<span class="w-3 h-3 bg-blue-500 rounded-full flex-shrink-0 ml-2"></span>` : ''}
                                     </div>
                                 `;
                             }).join('')}
@@ -446,7 +351,7 @@
             `;
         }
 
-        function renderFileContent(file, isSelf) {
+        function renderFileContent(file) {
             if (file.type && file.type.startsWith('image/')) {
                 return `<div class="mt-1"><img src="${file.data}" alt="${escapeHtml(file.name)}" class="max-w-xs rounded-xl max-h-48 object-cover cursor-pointer shadow-sm"></div>`;
             }
@@ -466,9 +371,6 @@
             const activeRoom = state.dms.find(r => r.id === state.activeRoomId);
             const partnerLoginId = activeRoom ? activeRoom.members.find(id => id !== currentUser.loginId) : null;
             const activePartner = state.allUsers.find(u => u.loginId === partnerLoginId) || { name: '不明', loginId: '', avatar: null };
-
-            const roomReadInfo = state.readStatus[state.activeRoomId] || {};
-            const partnerLastRead = roomReadInfo[partnerLoginId] || 0;
 
             return `
                 <div class="flex-1 flex flex-col h-full bg-slate-50 dark:bg-slate-950 max-w-xl mx-auto w-full shadow-lg border-x border-slate-200 dark:border-slate-800">
@@ -493,7 +395,6 @@
                         ${state.messages.length === 0 ? '<div class="text-center text-xs text-slate-400 py-10">メッセージやファイルを送信してみましょう！</div>' : ''}
                         ${state.messages.map(m => {
                             const isSelf = m.senderId === currentUser.loginId;
-                            const isRead = isSelf && partnerLastRead && m.createdAt <= partnerLastRead;
 
                             if (m.unsent) {
                                 return `
@@ -511,10 +412,9 @@
                                     <div class="flex items-end space-x-2 max-w-[85%] ${isSelf ? 'flex-row-reverse space-x-reverse' : ''}">
                                         <div class="px-4 py-2.5 rounded-2xl text-sm shadow-sm ${isSelf ? 'bg-blue-500 text-white rounded-br-none' : 'bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-bl-none border border-slate-100 dark:border-slate-800'}">
                                             ${m.text ? `<div>${escapeHtml(m.text)}</div>` : ''}
-                                            ${m.file ? renderFileContent(m.file, isSelf) : ''}
+                                            ${m.file ? renderFileContent(m.file) : ''}
                                         </div>
                                         <div class="flex flex-col items-end text-[10px] text-slate-400 flex-shrink-0">
-                                            ${isSelf && isRead ? '<span class="text-blue-600 dark:text-blue-400 font-bold">既読</span>' : ''}
                                             <span>${escapeHtml(m.time)}</span>
                                         </div>
                                         ${isSelf ? `
@@ -554,7 +454,7 @@
             `;
         }
 
-        // --- 7. イベントハンドラ ---
+        // --- 6. イベントハンドラ ---
         function attachEvents() {
             const globalDarkBtn = document.getElementById('globalDarkModeToggleBtn');
             if (globalDarkBtn) {
@@ -674,6 +574,7 @@
                         }, { merge: true });
 
                         alert('フレンドに追加しました！');
+                        await fetchDMsOnce();
                         renderApp();
                     } catch (err) {
                         alert('エラー: ' + err.message);
