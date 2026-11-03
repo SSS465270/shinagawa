@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Reach(FCM Edition)</title>
+    <title>Reach</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -39,8 +39,6 @@
         const db = firebase.firestore();
         const messaging = firebase.messaging();
 
-        // ※注意: Firebase Consoleの「プロジェクトの設定 > クラウドメッセージング」タブで
-        // ウェブプッシュ証明書（Web Push証明書）のキーペアを作成し、vapidKeyに設定する必要があります。
         const VAPID_KEY = "YOUR_WEB_PUSH_VAPID_KEY_HERE"; 
 
         // --- 2. アプリケーション状態 ---
@@ -62,7 +60,7 @@
             unsubscribeLastMsgs: []
         };
 
-        const STORAGE_KEYS = { DARK_MODE: 'shinagawa_dark_mode_v21' };
+        const STORAGE_KEYS = { DARK_MODE: 'reach_dark_mode_v21' };
         function isDarkMode() { return localStorage.getItem(STORAGE_KEYS.DARK_MODE) === 'true'; }
 
         // --- 3. 画像リサイズ ---
@@ -104,13 +102,25 @@
             return [id1, id2].sort().join('_vs_');
         }
 
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/[&'`<>"]/g, (match) => {
+                return {
+                    '&': '&amp;',
+                    "'": '&#x27;',
+                    '`': '&#x60;',
+                    '<': '&lt;',
+                    '>': '&gt;',
+                    '"': '&quot;',
+                }[match];
+            });
+        }
+
         // --- 4. FCM通知権限の取得とトークン保存 ---
         async function requestNotificationPermission() {
             try {
                 const permission = await Notification.requestPermission();
                 if (permission === 'granted') {
-                    console.log('通知の許可が与えられました。');
-                    // Service Workerを登録してFCMトークンを取得
                     const registration = await navigator.serviceWorker.register('firebase-messaging-sw.js');
                     const token = await messaging.getToken({
                         vapidKey: VAPID_KEY,
@@ -118,14 +128,10 @@
                     });
 
                     if (token && auth.currentUser) {
-                        console.log('FCM トークン取得成功:', token);
-                        // FirestoreのユーザードキュメントにFCMトークンを保存
                         await db.collection('users').doc(auth.currentUser.uid).update({
                             fcmToken: token
                         });
                     }
-                } else {
-                    console.log('通知の許可が拒否されました。');
                 }
             } catch (error) {
                 console.error('FCMトークン取得エラー:', error);
@@ -143,8 +149,6 @@
                 }
                 fetchAllUsers();
                 fetchDMsAndReadStatus();
-                
-                // ログイン成功時に通知許可をリクエスト
                 requestNotificationPermission();
             } else {
                 state.currentUserData = null;
@@ -203,9 +207,11 @@
         function subscribeMessages(roomId) {
             if (state.unsubscribeMessages) state.unsubscribeMessages();
             state.unsubscribeMessages = db.collection('messages').doc(roomId).collection('chats')
-                .orderBy('createdAt', 'asc')
+                .orderBy('createdAt', 'desc')
+                .limit(50)
                 .onSnapshot(snapshot => {
-                    state.messages = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    state.messages = docs.reverse();
                     renderApp();
                     
                     if (state.messages.length > 0 && state.currentUserData) {
@@ -270,12 +276,12 @@
                             ${state.isSignupMode ? `
                                 <div>
                                     <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">表示名</label>
-                                    <input type="text" id="displayNameInput" required placeholder="例:山田　太郎" class="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                    <input type="text" id="displayNameInput" required placeholder="例: 山田 太郎" class="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                                 </div>
                             ` : ''}
                             <div>
                                 <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">ログインID</label>
-                                <input type="text" id="loginIdInput" required placeholder="例:abc123" class="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <input type="text" id="loginIdInput" required placeholder="例: abc123" class="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                             </div>
                             <div>
                                 <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">パスワード (6文字以上)</label>
@@ -314,8 +320,8 @@
                         <div class="flex items-center space-x-3">
                             ${renderAvatar(currentUser, 'w-10 h-10', 'text-base')}
                             <div>
-                                <h2 class="text-sm font-bold text-slate-800 dark:text-slate-100">${currentUser.name}</h2>
-                                <p class="text-xs text-blue-600 dark:text-blue-400">ID: ${currentUser.loginId}</p>
+                                <h2 class="text-sm font-bold text-slate-800 dark:text-slate-100">${escapeHtml(currentUser.name)}</h2>
+                                <p class="text-xs text-blue-600 dark:text-blue-400">ID: ${escapeHtml(currentUser.loginId)}</p>
                             </div>
                         </div>
                         <div class="flex items-center space-x-1">
@@ -356,11 +362,11 @@
                                             ${renderAvatar(partner, 'w-12 h-12', 'text-lg')}
                                             <div class="flex-1 min-w-0 pr-2">
                                                 <div class="flex items-center justify-between mb-0.5">
-                                                    <span class="font-bold text-slate-800 dark:text-slate-100 text-sm truncate">${partner.name}</span>
-                                                    ${lastMsg ? `<span class="text-[11px] text-slate-400 flex-shrink-0">${lastMsg.time}</span>` : ''}
+                                                    <span class="font-bold text-slate-800 dark:text-slate-100 text-sm truncate">${escapeHtml(partner.name)}</span>
+                                                    ${lastMsg ? `<span class="text-[11px] text-slate-400 flex-shrink-0">${escapeHtml(lastMsg.time)}</span>` : ''}
                                                 </div>
                                                 <div class="text-xs text-slate-500 dark:text-slate-400 truncate">
-                                                    ${lastMsg ? (lastMsg.unsent ? 'メッセージの送信を取り消しました' : (lastMsg.file ? `📎 [ファイル] ${lastMsg.file.name}` : escapeHtml(lastMsg.text))) : 'メッセージなし'}
+                                                    ${lastMsg ? (lastMsg.unsent ? 'メッセージの送信を取り消しました' : (lastMsg.file ? `📎 [ファイル] ${escapeHtml(lastMsg.file.name)}` : escapeHtml(lastMsg.text))) : 'メッセージなし'}
                                                 </div>
                                             </div>
                                         </div>
@@ -382,11 +388,11 @@
                                     <div class="flex items-center space-x-3.5">
                                         ${renderAvatar(u, 'w-11 h-11', 'text-base')}
                                         <div>
-                                            <div class="text-sm font-bold text-slate-800 dark:text-slate-100">${u.name}</div>
-                                            <div class="text-xs text-slate-400">ID: ${u.loginId}</div>
+                                            <div class="text-sm font-bold text-slate-800 dark:text-slate-100">${escapeHtml(u.name)}</div>
+                                            <div class="text-xs text-slate-400">ID: ${escapeHtml(u.loginId)}</div>
                                         </div>
                                     </div>
-                                    <button data-start-chat="${u.loginId}" class="start-chat-btn px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white text-xs font-semibold rounded-xl shadow-sm transition">トーク</button>
+                                    <button data-start-chat="${escapeHtml(u.loginId)}" class="start-chat-btn px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white text-xs font-semibold rounded-xl shadow-sm transition">トーク</button>
                                 </div>
                             `).join('')}
                         `}
@@ -415,7 +421,7 @@
                         <form id="profileForm" class="space-y-6 max-w-md mx-auto">
                             <div class="text-center pb-4 border-b border-slate-100 dark:border-slate-800 space-y-3">
                                 <div class="relative w-24 h-24 mx-auto">
-                                    ${displayAvatar ? `<img src="${displayAvatar}" class="w-24 h-24 rounded-full object-cover shadow-md border-2 border-blue-500">` : `<div class="w-24 h-24 rounded-full bg-blue-500 text-white text-3xl font-bold flex items-center justify-center mx-auto shadow-md">${currentUser.name.charAt(0)}</div>`}
+                                    ${displayAvatar ? `<img src="${displayAvatar}" class="w-24 h-24 rounded-full object-cover shadow-md border-2 border-blue-500">` : `<div class="w-24 h-24 rounded-full bg-blue-500 text-white text-3xl font-bold flex items-center justify-center mx-auto shadow-md">${escapeHtml(currentUser.name.charAt(0))}</div>`}
                                 </div>
                                 <div>
                                     <input type="file" id="avatarFileInput" accept="image/*" class="hidden">
@@ -423,7 +429,7 @@
                                         📷 画像を変更
                                     </button>
                                 </div>
-                                <div class="text-xs text-slate-400">ID: <span class="font-mono font-semibold text-slate-600 dark:text-slate-300">${currentUser.loginId}</span></div>
+                                <div class="text-xs text-slate-400">ID: <span class="font-mono font-semibold text-slate-600 dark:text-slate-300">${escapeHtml(currentUser.loginId)}</span></div>
                             </div>
 
                             <div>
@@ -440,7 +446,23 @@
             `;
         }
 
+        function renderFileContent(file, isSelf) {
+            if (file.type && file.type.startsWith('image/')) {
+                return `<div class="mt-1"><img src="${file.data}" alt="${escapeHtml(file.name)}" class="max-w-xs rounded-xl max-h-48 object-cover cursor-pointer shadow-sm"></div>`;
+            }
+            return `
+                <div class="mt-1 flex items-center space-x-2 bg-black/10 dark:bg-white/10 p-2 rounded-xl text-xs">
+                    <i data-lucide="file" class="w-4 h-4 flex-shrink-0"></i>
+                    <a href="${file.data}" download="${escapeHtml(file.name)}" class="underline truncate font-medium hover:opacity-80">${escapeHtml(file.name)}</a>
+                </div>
+            `;
+        }
+
         function renderChatScreen(currentUser) {
+            if (state.activeRoomId) {
+                subscribeMessages(state.activeRoomId);
+            }
+
             const activeRoom = state.dms.find(r => r.id === state.activeRoomId);
             const partnerLoginId = activeRoom ? activeRoom.members.find(id => id !== currentUser.loginId) : null;
             const activePartner = state.allUsers.find(u => u.loginId === partnerLoginId) || { name: '不明', loginId: '', avatar: null };
@@ -459,8 +481,8 @@
                             <div class="flex items-center space-x-2">
                                 ${renderAvatar(activePartner, 'w-9 h-9', 'text-sm')}
                                 <div>
-                                    <h3 class="font-bold text-slate-800 dark:text-slate-100 text-sm">${activePartner.name}</h3>
-                                    <p class="text-[10px] text-slate-400">ID: ${activePartner.loginId}</p>
+                                    <h3 class="font-bold text-slate-800 dark:text-slate-100 text-sm">${escapeHtml(activePartner.name)}</h3>
+                                    <p class="text-[10px] text-slate-400">ID: ${escapeHtml(activePartner.loginId)}</p>
                                 </div>
                             </div>
                         </div>
@@ -485,7 +507,7 @@
 
                             return `
                                 <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'} group">
-                                    <span class="text-xs text-slate-400 mb-1 px-1">${m.senderName}</span>
+                                    <span class="text-xs text-slate-400 mb-1 px-1">${escapeHtml(m.senderName)}</span>
                                     <div class="flex items-end space-x-2 max-w-[85%] ${isSelf ? 'flex-row-reverse space-x-reverse' : ''}">
                                         <div class="px-4 py-2.5 rounded-2xl text-sm shadow-sm ${isSelf ? 'bg-blue-500 text-white rounded-br-none' : 'bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-bl-none border border-slate-100 dark:border-slate-800'}">
                                             ${m.text ? `<div>${escapeHtml(m.text)}</div>` : ''}
@@ -493,10 +515,10 @@
                                         </div>
                                         <div class="flex flex-col items-end text-[10px] text-slate-400 flex-shrink-0">
                                             ${isSelf && isRead ? '<span class="text-blue-600 dark:text-blue-400 font-bold">既読</span>' : ''}
-                                            <span>${m.time}</span>
+                                            <span>${escapeHtml(m.time)}</span>
                                         </div>
                                         ${isSelf ? `
-                                            <button data-unsend-id="${m.id}" class="unsend-btn opacity-0 group-hover:opacity-100 transition text-[11px] text-slate-400 hover:text-red-400 px-1" title="送信取り消し">
+                                            <button data-unsend-id="${escapeHtml(m.id)}" class="unsend-btn opacity-0 group-hover:opacity-100 transition text-[11px] text-slate-400 hover:text-red-400 px-1" title="送信取り消し">
                                                 取り消し
                                             </button>
                                         ` : ''}
@@ -510,22 +532,21 @@
                         <div class="bg-blue-50 dark:bg-blue-950/60 border-t border-blue-200 dark:border-blue-800 px-4 py-2 flex items-center justify-between text-xs text-blue-800 dark:text-blue-300">
                             <div class="flex items-center space-x-2 truncate">
                                 <i data-lucide="paperclip" class="w-4 h-4 flex-shrink-0"></i>
-                                <span class="font-bold truncate">${state.selectedFile.name}</span>
+                                <span class="font-bold truncate">${escapeHtml(state.selectedFile.name)}</span>
                             </div>
                             <button id="cancelFileBtn" class="text-slate-400 hover:text-red-500 p-1"><i data-lucide="x" class="w-4 h-4"></i></button>
                         </div>
                     ` : ''}
 
-                    <div class="p-3 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex-shrink-0">
-                        <form id="messageForm" class="flex items-center space-x-2">
-                            <input type="file" id="fileFileInput" class="hidden">
-                            <button type="button" id="triggerFileBtn" class="p-2.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition">
-                                <i data-lucide="paperclip" class="w-5 h-5"></i>
-                            </button>
-                            <input type="text" id="messageInput" placeholder="メッセージを入力..." class="flex-1 px-4 py-3 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                            <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white px-5 py-3 rounded-xl text-sm font-semibold shadow-md shadow-blue-500/20 flex items-center space-x-1 flex-shrink-0">
+                    <div class="p-3 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center space-x-2">
+                        <input type="file" id="chatFileInput" class="hidden">
+                        <button id="triggerChatFileBtn" class="p-2.5 text-slate-400 hover:text-blue-500 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition" title="ファイルを添付">
+                            <i data-lucide="paperclip" class="w-5 h-5"></i>
+                        </button>
+                        <form id="messageForm" class="flex-1 flex space-x-2">
+                            <input type="text" id="messageInput" placeholder="メッセージを入力..." class="flex-1 px-4 py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 border border-transparent dark:border-slate-700">
+                            <button type="submit" class="px-4 py-2.5 bg-blue-500 hover:bg-blue-600 text-white rounded-xl shadow-sm transition flex items-center justify-center">
                                 <i data-lucide="send" class="w-4 h-4"></i>
-                                <span>送信</span>
                             </button>
                         </form>
                     </div>
@@ -533,30 +554,24 @@
             `;
         }
 
-        function renderFileContent(file, isSelf) {
-            const isImage = file.type.startsWith('image/');
-            if (isImage) {
-                return `<div class="mt-2"><img src="${file.data}" alt="${escapeHtml(file.name)}" class="max-w-xs max-h-60 rounded-xl border border-slate-200/50 dark:border-slate-700 shadow-sm object-cover"></div>`;
-            } else {
-                return `
-                    <div class="mt-2 p-3 rounded-xl ${isSelf ? 'bg-blue-600/40 border border-blue-400/30' : 'bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700'} flex items-center justify-between space-x-3">
-                        <div class="flex items-center space-x-2 min-w-0">
-                            <i data-lucide="file-text" class="w-5 h-5 flex-shrink-0"></i>
-                            <div class="min-w-0"><div class="text-xs font-bold truncate">${escapeHtml(file.name)}</div></div>
-                        </div>
-                    </div>
-                `;
-            }
-        }
-
-        function escapeHtml(str) {
-            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
-        }
-
-        // --- 7. イベント管理 ---
+        // --- 7. イベントハンドラ ---
         function attachEvents() {
-            const modeBtn = document.getElementById('toggleModeBtn');
-            if (modeBtn) modeBtn.onclick = () => { state.isSignupMode = !state.isSignupMode; window.renderApp(); };
+            const globalDarkBtn = document.getElementById('globalDarkModeToggleBtn');
+            if (globalDarkBtn) {
+                globalDarkBtn.onclick = () => {
+                    const current = isDarkMode();
+                    localStorage.setItem(STORAGE_KEYS.DARK_MODE, !current);
+                    renderApp();
+                };
+            }
+
+            const toggleModeBtn = document.getElementById('toggleModeBtn');
+            if (toggleModeBtn) {
+                toggleModeBtn.onclick = () => {
+                    state.isSignupMode = !state.isSignupMode;
+                    renderApp();
+                };
+            }
 
             const authForm = document.getElementById('authForm');
             if (authForm) {
@@ -564,25 +579,22 @@
                     e.preventDefault();
                     const loginId = document.getElementById('loginIdInput').value.trim();
                     const password = document.getElementById('passwordInput').value;
-                    const email = `${loginId}@shinagawa-chat.com`;
+                    const email = `${loginId}@shinagawa.org`;
 
                     try {
                         if (state.isSignupMode) {
-                            const name = document.getElementById('displayNameInput').value.trim();
-                            const res = await auth.createUserWithEmailAndPassword(email, password);
-                            await db.collection('users').doc(res.user.uid).set({
-                                uid: res.user.uid,
+                            const displayName = document.getElementById('displayNameInput').value.trim();
+                            const cred = await auth.createUserWithEmailAndPassword(email, password);
+                            await db.collection('users').doc(cred.user.uid).set({
+                                uid: cred.user.uid,
                                 loginId: loginId,
-                                name: name,
+                                name: displayName,
                                 friends: [],
-                                avatar: null,
-                                fcmToken: null
+                                avatar: null
                             });
-                            alert('アカウント登録が完了しました！');
                         } else {
                             await auth.signInWithEmailAndPassword(email, password);
                         }
-                        state.view = 'home';
                     } catch (err) {
                         alert('認証エラー: ' + err.message);
                     }
@@ -594,22 +606,111 @@
                 logoutBtn.onclick = () => auth.signOut();
             }
 
-            const globalDarkModeToggleBtn = document.getElementById('globalDarkModeToggleBtn');
-            if (globalDarkModeToggleBtn) {
-                globalDarkModeToggleBtn.onclick = () => {
-                    localStorage.setItem(STORAGE_KEYS.DARK_MODE, !isDarkMode());
-                    window.renderApp();
-                };
-            }
-
             const goToSettingsBtn = document.getElementById('goToSettingsBtn');
             if (goToSettingsBtn) {
-                goToSettingsBtn.onclick = () => { state.tempAvatar = null; state.view = 'settings'; window.renderApp(); };
+                goToSettingsBtn.onclick = () => {
+                    state.view = 'settings';
+                    state.tempAvatar = null;
+                    renderApp();
+                };
             }
 
             const backToHomeFromSettingsBtn = document.getElementById('backToHomeFromSettingsBtn');
             if (backToHomeFromSettingsBtn) {
-                backToHomeFromSettingsBtn.onclick = () => { state.tempAvatar = null; state.view = 'home'; window.renderApp(); };
+                backToHomeFromSettingsBtn.onclick = () => {
+                    state.view = 'home';
+                    state.tempAvatar = null;
+                    renderApp();
+                };
+            }
+
+            document.querySelectorAll('[data-tab]').forEach(btn => {
+                btn.onclick = () => {
+                    state.currentTab = btn.getAttribute('data-tab');
+                    renderApp();
+                };
+            });
+
+            const addFriendForm = document.getElementById('addFriendForm');
+            if (addFriendForm) {
+                addFriendForm.onsubmit = async (e) => {
+                    e.preventDefault();
+                    const targetId = document.getElementById('friendIdInput').value.trim();
+                    if (!targetId || targetId === state.currentUserData.loginId) {
+                        alert('有効なログインIDを入力してください。');
+                        return;
+                    }
+
+                    const targetUser = state.allUsers.find(u => u.loginId === targetId);
+                    if (!targetUser) {
+                        alert('ユーザーが見つかりませんでした。');
+                        return;
+                    }
+
+                    const myFriends = state.currentUserData.friends || [];
+                    if (myFriends.includes(targetId)) {
+                        alert('すでにフレンドです。');
+                        return;
+                    }
+
+                    try {
+                        const myUid = auth.currentUser.uid;
+                        const targetUid = targetUser.uid;
+
+                        const newMyFriends = [...myFriends, targetId];
+                        const targetFriends = targetUser.friends || [];
+                        const newTargetFriends = [...targetFriends, state.currentUserData.loginId];
+
+                        await db.collection('users').doc(myUid).update({ friends: newMyFriends });
+                        await db.collection('users').doc(targetUid).update({ friends: newTargetFriends });
+
+                        state.currentUserData.friends = newMyFriends;
+                        targetUser.friends = newTargetFriends;
+
+                        const roomId = getRoomId(state.currentUserData.loginId, targetId);
+                        await db.collection('dms').doc(roomId).set({
+                            members: [state.currentUserData.loginId, targetId],
+                            createdAt: Date.now()
+                        }, { merge: true });
+
+                        alert('フレンドに追加しました！');
+                        renderApp();
+                    } catch (err) {
+                        alert('エラー: ' + err.message);
+                    }
+                };
+            }
+
+            document.querySelectorAll('.start-chat-btn').forEach(btn => {
+                btn.onclick = () => {
+                    const targetLoginId = btn.getAttribute('data-start-chat');
+                    const roomId = getRoomId(state.currentUserData.loginId, targetLoginId);
+                    state.activeRoomId = roomId;
+                    state.view = 'chat';
+                    renderApp();
+                };
+            });
+
+            document.querySelectorAll('.room-item').forEach(item => {
+                item.onclick = () => {
+                    const roomId = item.getAttribute('data-room-id');
+                    state.activeRoomId = roomId;
+                    state.view = 'chat';
+                    renderApp();
+                };
+            });
+
+            const backToHomeBtn = document.getElementById('backToHomeBtn');
+            if (backToHomeBtn) {
+                backToHomeBtn.onclick = () => {
+                    if (state.unsubscribeMessages) {
+                        state.unsubscribeMessages();
+                        state.unsubscribeMessages = null;
+                    }
+                    state.activeRoomId = null;
+                    state.view = 'home';
+                    renderApp();
+                };
             }
 
             const triggerAvatarBtn = document.getElementById('triggerAvatarBtn');
@@ -618,9 +719,10 @@
                 triggerAvatarBtn.onclick = () => avatarFileInput.click();
                 avatarFileInput.onchange = async (e) => {
                     const file = e.target.files[0];
-                    if (!file) return;
-                    state.tempAvatar = await resizeImage(file, 120, 120, 0.75);
-                    window.renderApp();
+                    if (file) {
+                        state.tempAvatar = await resizeImage(file, 150, 150, 0.8);
+                        renderApp();
+                    }
                 };
             }
 
@@ -629,160 +731,103 @@
                 profileForm.onsubmit = async (e) => {
                     e.preventDefault();
                     const newName = document.getElementById('editNameInput').value.trim();
-                    const user = auth.currentUser;
-                    if (!user) return;
-
                     const updateData = { name: newName };
-                    if (state.tempAvatar !== null) updateData.avatar = state.tempAvatar;
-
-                    await db.collection('users').doc(user.uid).update(updateData);
-                    state.currentUserData.name = newName;
-                    if (state.tempAvatar !== null) state.currentUserData.avatar = state.tempAvatar;
-
-                    alert('プロフィールを更新しました！');
-                    state.view = 'home';
-                    state.tempAvatar = null;
-                    window.renderApp();
-                };
-            }
-
-            document.querySelectorAll('[data-tab]').forEach(btn => {
-                btn.onclick = (e) => { state.currentTab = e.currentTarget.getAttribute('data-tab'); window.renderApp(); };
-            });
-
-            const addForm = document.getElementById('addFriendForm');
-            if (addForm) {
-                addForm.onsubmit = async (e) => {
-                    e.preventDefault();
-                    const targetId = document.getElementById('friendIdInput').value.trim();
-                    if (!targetId || targetId === state.currentUserData.loginId) return;
-
-                    const targetUser = state.allUsers.find(u => u.loginId === targetId);
-                    if (!targetUser) { alert('ユーザーが見つかりません'); return; }
-
-                    const myUid = auth.currentUser.uid;
-                    const targetUid = targetUser.uid;
-
-                    await db.collection('users').doc(myUid).update({
-                        friends: firebase.firestore.FieldValue.arrayUnion(targetId)
-                    });
-                    await db.collection('users').doc(targetUid).update({
-                        friends: firebase.firestore.FieldValue.arrayUnion(state.currentUserData.loginId)
-                    });
-
-                    const roomId = getRoomId(state.currentUserData.loginId, targetId);
-                    await db.collection('dms').doc(roomId).set({
-                        id: roomId,
-                        members: [state.currentUserData.loginId, targetId],
-                        createdAt: new Date().toISOString()
-                    }, { merge: true });
-
-                    alert(`${targetUser.name} さんとフレンドになりました！`);
-                    fetchAllUsers();
-                };
-            }
-
-            document.querySelectorAll('.start-chat-btn').forEach(btn => {
-                btn.onclick = async (e) => {
-                    const partnerId = e.currentTarget.getAttribute('data-start-chat');
-                    const roomId = getRoomId(state.currentUserData.loginId, partnerId);
-                    
-                    const roomRef = db.collection('dms').doc(roomId);
-                    const roomDoc = await roomRef.get();
-                    if (!roomDoc.exists) {
-                        await roomRef.set({
-                            id: roomId,
-                            members: [state.currentUserData.loginId, partnerId],
-                            createdAt: new Date().toISOString()
-                        });
+                    if (state.tempAvatar !== null) {
+                        updateData.avatar = state.tempAvatar;
                     }
 
-                    state.activeRoomId = roomId;
-                    state.view = 'chat';
-                    subscribeMessages(roomId);
-                };
-            });
-
-            document.querySelectorAll('.room-item').forEach(item => {
-                item.onclick = (e) => {
-                    const roomId = e.currentTarget.getAttribute('data-room-id');
-                    state.activeRoomId = roomId;
-                    state.view = 'chat';
-                    subscribeMessages(roomId);
-                };
-            });
-
-            const backBtn = document.getElementById('backToHomeBtn');
-            if (backBtn) {
-                backBtn.onclick = () => {
-                    if (state.unsubscribeMessages) state.unsubscribeMessages();
-                    state.view = 'home';
-                    state.activeRoomId = null;
-                    state.selectedFile = null;
-                    window.renderApp();
+                    try {
+                        await db.collection('users').doc(auth.currentUser.uid).update(updateData);
+                        state.currentUserData.name = newName;
+                        if (updateData.avatar) state.currentUserData.avatar = updateData.avatar;
+                        state.tempAvatar = null;
+                        alert('プロフィールを更新しました！');
+                        state.view = 'home';
+                        renderApp();
+                    } catch (err) {
+                        alert('エラー: ' + err.message);
+                    }
                 };
             }
 
-            document.querySelectorAll('.unsend-btn').forEach(btn => {
-                btn.onclick = async (e) => {
-                    const msgId = e.currentTarget.getAttribute('data-unsend-id');
-                    if (confirm("このメッセージの送信を取り消しますか？")) {
-                        await db.collection('messages').doc(state.activeRoomId).collection('chats').doc(msgId).update({
-                            unsent: true
-                        });
-                    }
-                };
-            });
-
-            const triggerFileBtn = document.getElementById('triggerFileBtn');
-            const fileFileInput = document.getElementById('fileFileInput');
-            if (triggerFileBtn && fileFileInput) {
-                triggerFileBtn.onclick = () => fileFileInput.click();
-                fileFileInput.onchange = (e) => {
+            const triggerChatFileBtn = document.getElementById('triggerChatFileBtn');
+            const chatFileInput = document.getElementById('chatFileInput');
+            if (triggerChatFileBtn && chatFileInput) {
+                triggerChatFileBtn.onclick = () => chatFileInput.click();
+                chatFileInput.onchange = async (e) => {
                     const file = e.target.files[0];
-                    if (!file) return;
-                    const reader = new FileReader();
-                    reader.readAsDataURL(file);
-                    reader.onload = () => {
-                        state.selectedFile = { name: file.name, size: file.size, type: file.type, data: reader.result };
-                        window.renderApp();
-                    };
+                    if (file) {
+                        let fileData;
+                        if (file.type.startsWith('image/')) {
+                            fileData = await resizeImage(file, 800, 800, 0.7);
+                        } else {
+                            fileData = await new Promise((res) => {
+                                const r = new FileReader();
+                                r.onload = (ev) => res(ev.target.result);
+                                r.readAsDataURL(file);
+                            });
+                        }
+                        state.selectedFile = { name: file.name, type: file.type, data: fileData };
+                        renderApp();
+                    }
                 };
             }
 
             const cancelFileBtn = document.getElementById('cancelFileBtn');
             if (cancelFileBtn) {
-                cancelFileBtn.onclick = () => { state.selectedFile = null; window.renderApp(); };
+                cancelFileBtn.onclick = () => {
+                    state.selectedFile = null;
+                    renderApp();
+                };
             }
 
-            const msgForm = document.getElementById('messageForm');
-            if (msgForm) {
-                msgForm.onsubmit = async (e) => {
+            const messageForm = document.getElementById('messageForm');
+            if (messageForm) {
+                messageForm.onsubmit = async (e) => {
                     e.preventDefault();
                     const input = document.getElementById('messageInput');
                     const text = input.value.trim();
-                    const file = state.selectedFile;
-                    if (!text && !file) return;
+                    if (!text && !state.selectedFile) return;
 
-                    const now = new Date();
-                    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-                    const timestamp = Date.now();
-
-                    await db.collection('messages').doc(state.activeRoomId).collection('chats').add({
+                    const msgData = {
                         senderId: state.currentUserData.loginId,
                         senderName: state.currentUserData.name,
                         text: text,
-                        file: file,
-                        time: timeStr,
-                        createdAt: timestamp,
+                        file: state.selectedFile,
+                        createdAt: Date.now(),
+                        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                         unsent: false
-                    });
+                    };
 
+                    const roomId = state.activeRoomId;
                     input.value = '';
                     state.selectedFile = null;
-                    window.renderApp();
+
+                    try {
+                        await db.collection('messages').doc(roomId).collection('chats').add(msgData);
+                    } catch (err) {
+                        alert('送信エラー: ' + err.message);
+                    }
                 };
             }
+
+            document.querySelectorAll('.unsend-btn').forEach(btn => {
+                btn.onclick = async (e) => {
+                    e.stopPropagation();
+                    const msgId = btn.getAttribute('data-unsend-id');
+                    if (confirm('このメッセージを取り消しますか？')) {
+                        try {
+                            await db.collection('messages').doc(state.activeRoomId).collection('chats').doc(msgId).update({
+                                unsent: true,
+                                text: '',
+                                file: null
+                            });
+                        } catch (err) {
+                            alert('エラー: ' + err.message);
+                        }
+                    }
+                };
+            });
         }
     </script>
 </body>
