@@ -122,7 +122,7 @@
                     if (doc.exists) {
                         state.currentUserData = doc.data();
                     } else {
-                        state.currentUserData = { uid: user.uid, loginId: user.email.split('@')[0], name: '名無し', friends: [], avatar: null };
+                        state.currentUserData = { uid: user.uid, loginId: user.email.split('@')[0], name: '名無し', realName: '', friends: [], avatar: null };
                     }
                     await fetchAllUsers();
                     await fetchDMsOnce();
@@ -277,9 +277,9 @@
 
         function renderAuthScreen() {
             return `
-                <div class="flex-1 flex items-center justify-center bg-gradient-to-br from-blue-600 to-indigo-800 dark:from-blue-950 dark:to-slate-900 p-4 relative">
+                <div class="flex-1 flex items-center justify-center bg-gradient-to-br from-blue-600 to-indigo-800 dark:from-blue-950 dark:to-slate-900 p-4 relative overflow-y-auto">
                     <div class="absolute top-4 right-4">${renderDarkModeButton()}</div>
-                    <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-xl w-full max-w-md p-8 flex flex-col space-y-6 border border-slate-100 dark:border-slate-800">
+                    <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-xl w-full max-w-md p-8 flex flex-col space-y-6 border border-slate-100 dark:border-slate-800 my-auto">
                         <div class="text-center space-y-2">
                             <div class="w-16 h-16 bg-blue-500 rounded-2xl mx-auto flex items-center justify-center text-white text-3xl font-bold shadow-lg shadow-blue-500/30">💬</div>
                             <h1 class="text-2xl font-bold text-slate-800 dark:text-slate-100">Reach</h1>
@@ -288,8 +288,18 @@
                         <form id="authForm" class="space-y-4">
                             ${state.isSignupMode ? `
                                 <div>
-                                    <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">表示名</label>
+                                    <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">表示名 (アプリ内用)</label>
                                     <input type="text" id="displayNameInput" required placeholder="例: 山田 太郎" class="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                </div>
+                                <div class="bg-blue-50/50 dark:bg-slate-800/40 p-3.5 rounded-xl border border-blue-100 dark:border-slate-700 space-y-3">
+                                    <div class="text-xs font-bold text-blue-600 dark:text-blue-400 flex items-center space-x-1">
+                                        <i data-lucide="shield-check" class="w-4 h-4"></i>
+                                        <span>管理者確認用情報 (非公開)</span>
+                                    </div>
+                                    <div>
+                                        <label class="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">本名 (管理者確認用)</label>
+                                        <input type="text" id="realNameInput" required placeholder="例: 山田　太郎" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                    </div>
                                 </div>
                             ` : ''}
                             <div>
@@ -840,13 +850,18 @@
                     try {
                         if (state.isSignupMode) {
                             const displayName = document.getElementById('displayNameInput').value.trim();
+                            const realName = document.getElementById('realNameInput').value.trim();
                             const cred = await auth.createUserWithEmailAndPassword(email, password);
+                            
+                            // Firestore に本名 (realName) も保存する
                             await db.collection('users').doc(cred.user.uid).set({
                                 uid: cred.user.uid,
                                 loginId: loginId,
                                 name: displayName,
+                                realName: realName,
                                 friends: [],
-                                avatar: null
+                                avatar: null,
+                                createdAt: Date.now()
                             });
                         } else {
                             await auth.signInWithEmailAndPassword(email, password);
@@ -963,7 +978,7 @@
                 };
             }
 
-            // グループ編集フォーム送信（メンバー追加・削除・名前変更・アバター変更）
+            // グループ編集フォーム送信
             const editGroupForm = document.getElementById('editGroupForm');
             if (editGroupForm) {
                 editGroupForm.onsubmit = async (e) => {
