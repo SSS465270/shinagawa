@@ -48,6 +48,7 @@
             view: 'home',
             activeRoomId: null,
             selectedFile: null,
+            replyToMessage: null, // 返信対象メッセージ
             tempAvatar: null,
             tempGroupAvatar: null,
             currentUserData: null,
@@ -191,7 +192,7 @@
             }
         }
 
-        // リアルタイムメッセージ受信（readUsers配列を使った自動既読化）
+        // リアルタイムメッセージ受信
         function subscribeMessages(roomId) {
             if (state.unsubscribeMessages) state.unsubscribeMessages();
             state.unsubscribeMessages = db.collection('messages').doc(roomId).collection('chats')
@@ -243,7 +244,6 @@
                     const readUsers = m.readUsers || [];
                     const readCount = readUsers.length;
 
-                    // システムメッセージの描画
                     if (m.isSystem) {
                         return `
                             <div class="flex justify-center my-2">
@@ -275,11 +275,20 @@
                         `;
                     }
 
+                    // 引用返信部分のUI
+                    const replyHtml = m.replyTo ? `
+                        <div class="mb-1.5 p-1.5 rounded-lg bg-black/10 dark:bg-white/10 text-xs border-l-2 border-blue-400 dark:border-blue-300">
+                            <div class="font-bold text-[11px] opacity-80">${escapeHtml(m.replyTo.name)}</div>
+                            <div class="truncate text-[11px] opacity-70">${escapeHtml(m.replyTo.text || '[ファイル]')}</div>
+                        </div>
+                    ` : '';
+
                     return `
                         <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'} group">
                             <span class="text-xs text-slate-400 mb-1 px-1">${escapeHtml(m.senderName)}</span>
                             <div class="flex items-end space-x-2 max-w-[85%] ${isSelf ? 'flex-row-reverse space-x-reverse' : ''}">
                                 <div class="px-4 py-2.5 rounded-2xl text-sm shadow-sm ${isSelf ? 'bg-blue-500 text-white rounded-br-none' : 'bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-bl-none border border-slate-100 dark:border-slate-800'}">
+                                    ${replyHtml}
                                     ${m.text ? `<div>${escapeHtml(m.text)}</div>` : ''}
                                     ${m.file ? renderFileContent(m.file) : ''}
                                 </div>
@@ -287,11 +296,20 @@
                                     <span>${escapeHtml(m.time)}</span>
                                     ${readLabelHtml}
                                 </div>
-                                ${isSelf ? `
-                                    <button data-unsend-id="${escapeHtml(m.id)}" class="unsend-btn opacity-0 group-hover:opacity-100 transition text-[11px] text-slate-400 hover:text-red-400 px-1" title="送信取り消し">
-                                        取り消し
+                                <!-- 操作メニュー（ピン留め・返信・取り消し） -->
+                                <div class="opacity-65 group-hover:opacity-100 transition-opacity flex items-center space-x-1.5 px-1 select-none">
+                                    <button data-reply-id="${escapeHtml(m.id)}" class="reply-btn text-[11px] text-slate-400 hover:text-blue-500" title="返信">
+                                        <i data-lucide="reply" class="w-3.5 h-3.5"></i>
                                     </button>
-                                ` : ''}
+                                    <button data-pin-text="${escapeHtml(m.text || '[ファイル]')}" data-pin-name="${escapeHtml(m.senderName)}" class="pin-btn text-[11px] text-slate-400 hover:text-amber-500" title="ピン留め">
+                                        <i data-lucide="pin" class="w-3.5 h-3.5"></i>
+                                    </button>
+                                    ${isSelf ? `
+                                        <button data-unsend-id="${escapeHtml(m.id)}" class="unsend-btn text-[11px] text-slate-400 hover:text-red-400" title="送信取り消し">
+                                            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                                        </button>
+                                    ` : ''}
+                                </div>
                             </div>
                         </div>
                     `;
@@ -299,7 +317,7 @@
 
             container.scrollTop = container.scrollHeight;
             lucide.createIcons();
-            attachUnsendEvents();
+            attachMessageActionEvents();
         }
 
         // --- 5. 描画ルーター ---
@@ -361,7 +379,7 @@
                                     </div>
                                     <div>
                                         <label class="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">本名 (管理者確認用)</label>
-                                        <input type="text" id="realNameInput" required placeholder="例: 山田 太郎" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                        <input type="text" id="realNameInput" required placeholder="例: 山崎 宇宙" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                                     </div>
                                 </div>
                             ` : ''}
@@ -494,7 +512,6 @@
             `;
         }
 
-        // --- 新規グループ作成モーダル ---
         function renderGroupModal(friendUsers) {
             if (!state.isGroupModalOpen) return '';
             const avatarDisplay = state.tempGroupAvatar ? `<img src="${state.tempGroupAvatar}" class="w-16 h-16 rounded-full object-cover mx-auto">` : `<div class="w-16 h-16 rounded-full bg-indigo-500 text-white text-2xl font-bold flex items-center justify-center mx-auto">👥</div>`;
@@ -538,7 +555,6 @@
             `;
         }
 
-        // --- グループ編集モーダル ---
         function renderGroupEditModal() {
             if (!state.isGroupEditModalOpen || !state.activeRoomId) return '';
             const activeRoom = state.dms.find(r => r.id === state.activeRoomId);
@@ -566,7 +582,7 @@
                                 <input type="text" id="editGroupNameInput" value="${escapeHtml(activeRoom.name || '')}" required class="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
                             </div>
                             <div>
-                                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">メンバー管理 (チェックを入れたユーザーが参加)</label>
+                                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">メンバー管理</label>
                                 <div class="max-h-40 overflow-y-auto space-y-2 border border-slate-200 dark:border-slate-700 rounded-xl p-3 bg-slate-50/50 dark:bg-slate-800/30">
                                     ${memberCandidates.map(u => {
                                         const isChecked = currentMembers.includes(u.loginId);
@@ -592,7 +608,6 @@
             `;
         }
 
-        // --- Details 画面 ---
         function renderDetailsScreen(currentUser) {
             return `
                 <div class="flex-1 flex flex-col h-full bg-white dark:bg-slate-900 max-w-xl mx-auto w-full shadow-lg border-x border-slate-200 dark:border-slate-800">
@@ -776,6 +791,9 @@
                 }
             }, 0);
 
+            // ピン留めメッセージの表示
+            const pinned = activeRoom.pinnedMessage;
+
             return `
                 <div class="flex-1 flex flex-col h-full bg-slate-50 dark:bg-slate-950 max-w-xl mx-auto w-full shadow-lg border-x border-slate-200 dark:border-slate-800 relative">
                     <div class="h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 flex items-center justify-between shadow-sm flex-shrink-0">
@@ -802,6 +820,20 @@
                         </div>
                     </div>
 
+                    <!-- ピン留めエリア -->
+                    ${pinned ? `
+                        <div class="bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-900 px-4 py-2 flex items-center justify-between text-xs text-amber-900 dark:amber-200 shadow-sm flex-shrink-0">
+                            <div class="flex items-center space-x-2 truncate min-w-0 flex-1 pr-2">
+                                <i data-lucide="pin" class="w-4 h-4 text-amber-500 flex-shrink-0"></i>
+                                <span class="font-bold flex-shrink-0">${escapeHtml(pinned.name)}:</span>
+                                <span class="truncate">${escapeHtml(pinned.text)}</span>
+                            </div>
+                            <button id="unpinBtn" class="text-amber-500 hover:text-amber-700 p-1 flex-shrink-0" title="ピン留め解除">
+                                <i data-lucide="x" class="w-4 h-4"></i>
+                            </button>
+                        </div>
+                    ` : ''}
+
                     <div id="messageContainer" class="flex-1 overflow-y-auto p-4 space-y-4">
                         ${state.messages.length === 0 ? '<div class="text-center text-xs text-slate-400 py-10">メッセージやファイルを送信してみましょう！</div>' : ''}
                         ${state.messages.map((m) => {
@@ -810,7 +842,6 @@
                             const readCount = readUsers.length;
                             const totalPartners = Math.max(1, (activeRoom.members || []).length - 1);
 
-                            // システムメッセージの描画
                             if (m.isSystem) {
                                 return `
                                     <div class="flex justify-center my-2">
@@ -841,11 +872,20 @@
                                     </div>
                                 `;
                             }
+
+                            const replyHtml = m.replyTo ? `
+                                <div class="mb-1.5 p-1.5 rounded-lg bg-black/10 dark:bg-white/10 text-xs border-l-2 border-blue-400 dark:border-blue-300">
+                                    <div class="font-bold text-[11px] opacity-80">${escapeHtml(m.replyTo.name)}</div>
+                                    <div class="truncate text-[11px] opacity-70">${escapeHtml(m.replyTo.text || '[ファイル]')}</div>
+                                </div>
+                            ` : '';
+
                             return `
                                 <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'} group">
                                     <span class="text-xs text-slate-400 mb-1 px-1">${escapeHtml(m.senderName)}</span>
                                     <div class="flex items-end space-x-2 max-w-[85%] ${isSelf ? 'flex-row-reverse space-x-reverse' : ''}">
                                         <div class="px-4 py-2.5 rounded-2xl text-sm shadow-sm ${isSelf ? 'bg-blue-500 text-white rounded-br-none' : 'bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-bl-none border border-slate-100 dark:border-slate-800'}">
+                                            ${replyHtml}
                                             ${m.text ? `<div>${escapeHtml(m.text)}</div>` : ''}
                                             ${m.file ? renderFileContent(m.file) : ''}
                                         </div>
@@ -853,17 +893,26 @@
                                             <span>${escapeHtml(m.time)}</span>
                                             ${readLabelHtml}
                                         </div>
-                                        ${isSelf ? `
-                                            <button data-unsend-id="${escapeHtml(m.id)}" class="unsend-btn opacity-0 group-hover:opacity-100 transition text-[11px] text-slate-400 hover:text-red-400 px-1" title="送信取り消し">
-                                                取り消し
+                                        <div class="opacity-0 group-hover:opacity-100 transition flex items-center space-x-1 px-1">
+                                            <button data-reply-id="${escapeHtml(m.id)}" class="reply-btn text-[11px] text-slate-400 hover:text-blue-500" title="返信">
+                                                <i data-lucide="reply" class="w-3.5 h-3.5"></i>
                                             </button>
-                                        ` : ''}
+                                            <button data-pin-text="${escapeHtml(m.text || '[ファイル]')}" data-pin-name="${escapeHtml(m.senderName)}" class="pin-btn text-[11px] text-slate-400 hover:text-amber-500" title="ピン留め">
+                                                <i data-lucide="pin" class="w-3.5 h-3.5"></i>
+                                            </button>
+                                            ${isSelf ? `
+                                                <button data-unsend-id="${escapeHtml(m.id)}" class="unsend-btn text-[11px] text-slate-400 hover:text-red-400" title="送信取り消し">
+                                                    <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                                                </button>
+                                            ` : ''}
+                                        </div>
                                     </div>
                                 </div>
                             `;
                         }).join('')}
                     </div>
 
+                    <!-- 添付ファイルプレビュー -->
                     ${state.selectedFile ? `
                         <div class="bg-blue-50 dark:bg-blue-950/60 border-t border-blue-200 dark:border-blue-800 px-4 py-2 flex items-center justify-between text-xs text-blue-800 dark:text-blue-300">
                             <div class="flex items-center space-x-2 truncate">
@@ -871,6 +920,18 @@
                                 <span class="font-bold truncate">${escapeHtml(state.selectedFile.name)}</span>
                             </div>
                             <button id="cancelFileBtn" class="text-slate-400 hover:text-red-500 p-1"><i data-lucide="x" class="w-4 h-4"></i></button>
+                        </div>
+                    ` : ''}
+
+                    <!-- 引用返信プレビュー -->
+                    ${state.replyToMessage ? `
+                        <div class="bg-indigo-50 dark:bg-indigo-950/60 border-t border-indigo-200 dark:border-indigo-800 px-4 py-2 flex items-center justify-between text-xs text-indigo-900 dark:text-indigo-200">
+                            <div class="flex items-center space-x-2 truncate">
+                                <i data-lucide="reply" class="w-4 h-4 flex-shrink-0 text-indigo-500"></i>
+                                <span class="font-bold flex-shrink-0">${escapeHtml(state.replyToMessage.name)}:</span>
+                                <span class="truncate">${escapeHtml(state.replyToMessage.text)}</span>
+                            </div>
+                            <button id="cancelReplyBtn" class="text-slate-400 hover:text-red-500 p-1"><i data-lucide="x" class="w-4 h-4"></i></button>
                         </div>
                     ` : ''}
 
@@ -892,7 +953,8 @@
             `;
         }
 
-        function attachUnsendEvents() {
+        function attachMessageActionEvents() {
+            // 送信取り消し
             document.querySelectorAll('.unsend-btn').forEach(btn => {
                 btn.onclick = async (e) => {
                     e.stopPropagation();
@@ -907,6 +969,41 @@
                         } catch (err) {
                             alert('エラー: ' + err.message);
                         }
+                    }
+                };
+            });
+
+            // 返信ボタン
+            document.querySelectorAll('.reply-btn').forEach(btn => {
+                btn.onclick = (e) => {
+                    e.stopPropagation();
+                    const msgId = btn.getAttribute('data-reply-id');
+                    const targetMsg = state.messages.find(m => m.id === msgId);
+                    if (targetMsg) {
+                        state.replyToMessage = {
+                            id: targetMsg.id,
+                            name: targetMsg.senderName,
+                            text: targetMsg.text || '[ファイル]'
+                        };
+                        renderApp();
+                    }
+                };
+            });
+
+            // ピン留めボタン
+            document.querySelectorAll('.pin-btn').forEach(btn => {
+                btn.onclick = async (e) => {
+                    e.stopPropagation();
+                    const name = btn.getAttribute('data-pin-name');
+                    const text = btn.getAttribute('data-pin-text');
+                    try {
+                        await db.collection('dms').doc(state.activeRoomId).update({
+                            pinnedMessage: { name, text }
+                        });
+                        await fetchDMsOnce();
+                        renderApp();
+                    } catch (err) {
+                        alert('ピン留めエラー: ' + err.message);
                     }
                 };
             });
@@ -1010,6 +1107,21 @@
                 };
             }
 
+            const unpinBtn = document.getElementById('unpinBtn');
+            if (unpinBtn) {
+                unpinBtn.onclick = async () => {
+                    try {
+                        await db.collection('dms').doc(state.activeRoomId).update({
+                            pinnedMessage: firebase.firestore.FieldValue.delete()
+                        });
+                        await fetchDMsOnce();
+                        renderApp();
+                    } catch (err) {
+                        alert('ピン留め解除エラー: ' + err.message);
+                    }
+                };
+            }
+
             const triggerGroupAvatarBtn = document.getElementById('triggerGroupAvatarBtn');
             const groupAvatarFileInput = document.getElementById('groupAvatarFileInput');
             if (triggerGroupAvatarBtn && groupAvatarFileInput) {
@@ -1091,10 +1203,8 @@
                     }
 
                     try {
-                        // 1. グループ情報の更新
                         await db.collection('dms').doc(state.activeRoomId).update(updatePayload);
 
-                        // 2. トーク画面にシステム通知メッセージを自動送信
                         const nowTimestamp = Date.now();
                         const systemMsg = {
                             senderId: 'system',
@@ -1109,7 +1219,6 @@
 
                         await db.collection('messages').doc(state.activeRoomId).collection('chats').add(systemMsg);
 
-                        // ラストメッセージ情報も更新
                         await db.collection('dms').doc(state.activeRoomId).set({
                             lastMessage: `${state.currentUserData.name} がグループ設定を変更しました`,
                             lastMessageTime: nowTimestamp,
@@ -1252,6 +1361,7 @@
                     state.activeRoomId = roomId;
                     state.view = 'chat';
                     state.messages = [];
+                    state.replyToMessage = null;
                     renderApp();
                 };
             });
@@ -1262,6 +1372,7 @@
                     state.activeRoomId = roomId;
                     state.view = 'chat';
                     state.messages = [];
+                    state.replyToMessage = null;
                     try {
                         await db.collection('dms').doc(roomId).update({ unread: false });
                     } catch(e){}
@@ -1278,6 +1389,7 @@
                     }
                     state.activeRoomId = null;
                     state.view = 'home';
+                    state.replyToMessage = null;
                     fetchDMsOnce();
                     renderApp();
                 };
@@ -1354,6 +1466,14 @@
                 };
             }
 
+            const cancelReplyBtn = document.getElementById('cancelReplyBtn');
+            if (cancelReplyBtn) {
+                cancelReplyBtn.onclick = () => {
+                    state.replyToMessage = null;
+                    renderApp();
+                };
+            }
+
             const messageForm = document.getElementById('messageForm');
             if (messageForm) {
                 messageForm.onsubmit = async (e) => {
@@ -1368,6 +1488,7 @@
                         senderName: state.currentUserData.name,
                         text: text,
                         file: state.selectedFile,
+                        replyTo: state.replyToMessage ? { name: state.replyToMessage.name, text: state.replyToMessage.text } : null,
                         createdAt: nowTimestamp,
                         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                         unsent: false,
@@ -1377,6 +1498,7 @@
                     const roomId = state.activeRoomId;
                     input.value = '';
                     state.selectedFile = null;
+                    state.replyToMessage = null;
 
                     try {
                         await db.collection('messages').doc(roomId).collection('chats').add(msgData);
@@ -1392,7 +1514,7 @@
                 };
             }
 
-            attachUnsendEvents();
+            attachMessageActionEvents();
         }
 
         // 初期描画実行
