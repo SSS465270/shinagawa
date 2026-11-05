@@ -4,6 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Reach</title>
+   
+    <!-- ファビコン（タブ用） -->
+    <link rel="icon" type="image/png" href="./Reach.png">
+    
+    <!-- ▼ スマホのホーム画面用アイコンを追加 -->
+    <link rel="apple-touch-icon" href="./Reach.png">
+   
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -41,7 +48,7 @@
         const state = {
             isSignupMode: false,
             currentTab: 'chats',
-            view: 'home',        // 'home' | 'chat' | 'settings' | 'details'
+            view: 'home',
             activeRoomId: null,
             selectedFile: null,
             tempAvatar: null,
@@ -118,11 +125,18 @@
         auth.onAuthStateChanged(async (user) => {
             if (user) {
                 try {
-                    const doc = await db.collection('users').doc(user.uid).get();
-                    if (doc.exists) {
-                        state.currentUserData = doc.data();
+                    let doc = await db.collection('users').doc(user.uid).get();
+                    if (!doc.exists) {
+                        const snap = await db.collection('users').where('auth_uid', '==', user.uid).limit(1).get();
+                        if (!snap.empty) {
+                            doc = snap.docs[0];
+                        }
+                    }
+
+                    if (doc && doc.exists) {
+                        state.currentUserData = { id: doc.id, ...doc.data() };
                     } else {
-                        state.currentUserData = { uid: user.uid, loginId: user.email.split('@')[0], name: '名無し', realName: '', friends: [], avatar: null };
+                        state.currentUserData = { id: user.uid, auth_uid: user.uid, loginId: user.email.split('@')[0], name: '名無し', realName: '', friends: [], avatar: null };
                     }
                     await fetchAllUsers();
                     await fetchDMsOnce();
@@ -139,7 +153,7 @@
         async function fetchAllUsers() {
             try {
                 const snapshot = await db.collection('users').get();
-                state.allUsers = snapshot.docs.map(doc => doc.data());
+                state.allUsers = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
             } catch (err) {
                 console.error("ユーザー一覧取得エラー:", err);
             }
@@ -180,14 +194,34 @@
             }
         }
 
+        // リアルタイムメッセージ受信（readUsers配列を使った自動既読化）
         function subscribeMessages(roomId) {
             if (state.unsubscribeMessages) state.unsubscribeMessages();
             state.unsubscribeMessages = db.collection('messages').doc(roomId).collection('chats')
                 .orderBy('createdAt', 'desc')
                 .limit(50)
-                .onSnapshot(snapshot => {
+                .onSnapshot(async (snapshot) => {
                     const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     state.messages = docs.reverse();
+
+                    // チャット画面を開いているとき、未読のメッセージに自分のIDを既読リストに追加（arrayUnionで重複なし）
+                    if (state.view === 'chat' && state.currentUserData) {
+                        const myLoginId = state.currentUserData.loginId;
+                        state.messages.forEach(async (m) => {
+                            if (m.senderId !== myLoginId) {
+                                const readUsers = m.readUsers || [];
+                                if (!readUsers.includes(myLoginId)) {
+                                    try {
+                                        await db.collection('messages').doc(roomId).collection('chats').doc(m.id).update({
+                                            readUsers: firebase.firestore.FieldValue.arrayUnion(myLoginId)
+                                        });
+                                    } catch (e) {
+                                        console.error("既読追加エラー:", e);
+                                    }
+                                }
+                            }
+                        });
+                    }
                     
                     if (state.view === 'chat') {
                         updateChatMessagesOnly();
@@ -202,10 +236,29 @@
             if (!container) return;
 
             const currentUser = state.currentUserData;
-            container.innerHTML = state.messages.length === 0 
+            const activeRoom = state.dms.find(r => r.id === state.activeRoomId) || { members: [] };
+            const totalPartners = Math.max(1, (activeRoom.members || []).length - 1);
+            const totalMessages = state.messages.length;
+
+            container.innerHTML = totalMessages === 0 
                 ? '<div class="text-center text-xs text-slate-400 py-10">メッセージやファイルを送信してみましょう！</div>' 
-                : state.messages.map(m => {
+                : state.messages.map((m) => {
                     const isSelf = m.senderId === currentUser.loginId;
+                    const readUsers = m.readUsers || [];
+                    const readCount = readUsers.length;
+
+                    // 既読ラベルの計算
+                    let readLabelHtml = '';
+                    if (isSelf) {
+                        if (readCount >= totalPartners) {
+                            readLabelHtml = '<span class="text-[10px] font-semibold text-blue-500 dark:text-blue-400">既読</span>';
+                        } else if (readCount > 0) {
+                            readLabelHtml = `<span class="text-[10px] font-semibold text-blue-500 dark:text-blue-400">既読 ${readCount}</span>`;
+                        } else {
+                            readLabelHtml = '<span class="text-[10px] text-slate-400">未読</span>';
+                        }
+                    }
+
                     if (m.unsent) {
                         return `
                             <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'}">
@@ -215,6 +268,7 @@
                             </div>
                         `;
                     }
+
                     return `
                         <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'} group">
                             <span class="text-xs text-slate-400 mb-1 px-1">${escapeHtml(m.senderName)}</span>
@@ -223,8 +277,9 @@
                                     ${m.text ? `<div>${escapeHtml(m.text)}</div>` : ''}
                                     ${m.file ? renderFileContent(m.file) : ''}
                                 </div>
-                                <div class="flex flex-col items-end text-[10px] text-slate-400 flex-shrink-0">
+                                <div class="flex flex-col items-end text-[10px] text-slate-400 flex-shrink-0 space-y-0.5">
                                     <span>${escapeHtml(m.time)}</span>
+                                    ${readLabelHtml}
                                 </div>
                                 ${isSelf ? `
                                     <button data-unsend-id="${escapeHtml(m.id)}" class="unsend-btn opacity-0 group-hover:opacity-100 transition text-[11px] text-slate-400 hover:text-red-400 px-1" title="送信取り消し">
@@ -708,7 +763,9 @@
             }
 
             setTimeout(() => {
-                if (state.activeRoomId) subscribeMessages(state.activeRoomId);
+                if (state.activeRoomId) {
+                    subscribeMessages(state.activeRoomId);
+                }
             }, 0);
 
             return `
@@ -739,8 +796,23 @@
 
                     <div id="messageContainer" class="flex-1 overflow-y-auto p-4 space-y-4">
                         ${state.messages.length === 0 ? '<div class="text-center text-xs text-slate-400 py-10">メッセージやファイルを送信してみましょう！</div>' : ''}
-                        ${state.messages.map(m => {
+                        ${state.messages.map((m) => {
                             const isSelf = m.senderId === currentUser.loginId;
+                            const readUsers = m.readUsers || [];
+                            const readCount = readUsers.length;
+                            const totalPartners = Math.max(1, (activeRoom.members || []).length - 1);
+
+                            let readLabelHtml = '';
+                            if (isSelf) {
+                                if (readCount >= totalPartners) {
+                                    readLabelHtml = '<span class="text-[10px] font-semibold text-blue-500 dark:text-blue-400">既読</span>';
+                                } else if (readCount > 0) {
+                                    readLabelHtml = `<span class="text-[10px] font-semibold text-blue-500 dark:text-blue-400">既読 ${readCount}</span>`;
+                                } else {
+                                    readLabelHtml = '<span class="text-[10px] text-slate-400">未読</span>';
+                                }
+                            }
+
                             if (m.unsent) {
                                 return `
                                     <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'}">
@@ -758,8 +830,9 @@
                                             ${m.text ? `<div>${escapeHtml(m.text)}</div>` : ''}
                                             ${m.file ? renderFileContent(m.file) : ''}
                                         </div>
-                                        <div class="flex flex-col items-end text-[10px] text-slate-400 flex-shrink-0">
+                                        <div class="flex flex-col items-end text-[10px] text-slate-400 flex-shrink-0 space-y-0.5">
                                             <span>${escapeHtml(m.time)}</span>
+                                            ${readLabelHtml}
                                         </div>
                                         ${isSelf ? `
                                             <button data-unsend-id="${escapeHtml(m.id)}" class="unsend-btn opacity-0 group-hover:opacity-100 transition text-[11px] text-slate-400 hover:text-red-400 px-1" title="送信取り消し">
@@ -851,22 +924,53 @@
                         if (state.isSignupMode) {
                             const displayName = document.getElementById('displayNameInput').value.trim();
                             const realName = document.getElementById('realNameInput').value.trim();
-                            const cred = await auth.createUserWithEmailAndPassword(email, password);
                             
-                            // Firestore に本名 (realName) も保存する
-                            await db.collection('users').doc(cred.user.uid).set({
-                                uid: cred.user.uid,
+                            const cred = await auth.createUserWithEmailAndPassword(email, password);
+                            const authUid = cred.user.uid;
+                            
+                            let nextNum = 1;
+                            try {
+                                const counterRef = db.collection('metadata').doc('userCounter');
+                                await db.runTransaction(async (transaction) => {
+                                    const counterDoc = await transaction.get(counterRef);
+                                    if (counterDoc.exists && typeof counterDoc.data().current === 'number') {
+                                        nextNum = counterDoc.data().current + 1;
+                                    } else {
+                                        const allUsersSnap = await db.collection('users').get();
+                                        const numericIds = allUsersSnap.docs
+                                            .map(d => parseInt(d.id, 10))
+                                            .filter(n => !isNaN(n));
+                                        if (numericIds.length > 0) {
+                                            nextNum = Math.max(...numericIds) + 1;
+                                        }
+                                    }
+                                    transaction.set(counterRef, { current: nextNum }, { merge: true });
+                                });
+                            } catch (counterErr) {
+                                console.warn("カウンターの処理でエラーが発生したためフォールバックします:", counterErr);
+                            }
+
+                            const sequentialId = String(nextNum);
+
+                            const userData = {
+                                auth_uid: authUid,
+                                numericId: sequentialId,
                                 loginId: loginId,
                                 name: displayName,
                                 realName: realName,
                                 friends: [],
                                 avatar: null,
                                 createdAt: Date.now()
-                            });
+                            };
+
+                            await db.collection('users').doc(sequentialId).set(userData);
+                            state.currentUserData = { id: sequentialId, ...userData };
+
                         } else {
                             await auth.signInWithEmailAndPassword(email, password);
                         }
                     } catch (err) {
+                        console.error("認証・登録エラー:", err);
                         alert('認証エラー: ' + err.message);
                     }
                 };
@@ -912,7 +1016,6 @@
                 };
             }
 
-            // 新規グループ作成アバター
             const triggerGroupAvatarBtn = document.getElementById('triggerGroupAvatarBtn');
             const groupAvatarFileInput = document.getElementById('groupAvatarFileInput');
             if (triggerGroupAvatarBtn && groupAvatarFileInput) {
@@ -926,7 +1029,6 @@
                 };
             }
 
-            // グループ作成モーダル開閉
             const openCreateGroupBtn = document.getElementById('openCreateGroupBtn');
             if (openCreateGroupBtn) {
                 openCreateGroupBtn.onclick = () => {
@@ -945,7 +1047,6 @@
                 };
             }
 
-            // グループ編集モーダル開閉
             const openGroupEditBtn = document.getElementById('openGroupEditBtn');
             if (openGroupEditBtn) {
                 openGroupEditBtn.onclick = () => {
@@ -964,7 +1065,6 @@
                 };
             }
 
-            // グループ編集アバター
             const triggerGroupEditAvatarBtn = document.getElementById('triggerGroupEditAvatarBtn');
             const groupEditAvatarFileInput = document.getElementById('groupEditAvatarFileInput');
             if (triggerGroupEditAvatarBtn && groupEditAvatarFileInput) {
@@ -978,7 +1078,6 @@
                 };
             }
 
-            // グループ編集フォーム送信
             const editGroupForm = document.getElementById('editGroupForm');
             if (editGroupForm) {
                 editGroupForm.onsubmit = async (e) => {
@@ -992,11 +1091,7 @@
                         return;
                     }
 
-                    const updatePayload = {
-                        name: newName,
-                        members: updatedMembers
-                    };
-
+                    const updatePayload = { name: newName, members: updatedMembers };
                     if (state.tempGroupAvatar !== null) {
                         updatePayload.avatar = state.tempGroupAvatar;
                     }
@@ -1014,7 +1109,6 @@
                 };
             }
 
-            // 新規グループ作成フォーム送信
             const createGroupForm = document.getElementById('createGroupForm');
             if (createGroupForm) {
                 createGroupForm.onsubmit = async (e) => {
@@ -1092,33 +1186,40 @@
                     }
 
                     try {
-                        const myUid = auth.currentUser.uid;
-                        const targetUid = targetUser.uid;
+                        const myDocId = state.currentUserData.id;
+                        const targetDocId = targetUser.id;
 
-                        const newMyFriends = [...myFriends, targetId];
-                        const targetFriends = targetUser.friends || [];
-                        const newTargetFriends = [...targetFriends, state.currentUserData.loginId];
+                        if (myDocId && targetDocId) {
+                            const myRef = db.collection('users').doc(myDocId);
+                            const targetRef = db.collection('users').doc(targetDocId);
 
-                        await db.collection('users').doc(myUid).update({ friends: newMyFriends });
-                        await db.collection('users').doc(targetUid).update({ friends: newTargetFriends });
+                            const newMyFriends = [...myFriends, targetId];
+                            const targetFriends = targetUser.friends || [];
+                            const newTargetFriends = [...targetFriends, state.currentUserData.loginId];
 
-                        state.currentUserData.friends = newMyFriends;
-                        targetUser.friends = newTargetFriends;
+                            await myRef.update({ friends: newMyFriends });
+                            await targetRef.update({ friends: newTargetFriends });
 
-                        const roomId = getRoomId(state.currentUserData.loginId, targetId);
-                        await db.collection('dms').doc(roomId).set({
-                            type: 'dm',
-                            members: [state.currentUserData.loginId, targetId],
-                            createdAt: Date.now(),
-                            lastMessage: '',
-                            lastMessageTime: Date.now(),
-                            lastSenderId: '',
-                            unread: false
-                        }, { merge: true });
+                            state.currentUserData.friends = newMyFriends;
+                            targetUser.friends = newTargetFriends;
 
-                        alert('フレンドに追加しました！');
-                        await fetchDMsOnce();
-                        renderApp();
+                            const roomId = getRoomId(state.currentUserData.loginId, targetId);
+                            await db.collection('dms').doc(roomId).set({
+                                type: 'dm',
+                                members: [state.currentUserData.loginId, targetId],
+                                createdAt: Date.now(),
+                                lastMessage: '',
+                                lastMessageTime: Date.now(),
+                                lastSenderId: '',
+                                unread: false
+                            }, { merge: true });
+
+                            alert('フレンドに追加しました！');
+                            await fetchDMsOnce();
+                            renderApp();
+                        } else {
+                            alert('ユーザー情報の更新に失敗しました。');
+                        }
                     } catch (err) {
                         alert('エラー: ' + err.message);
                     }
@@ -1187,13 +1288,16 @@
                     }
 
                     try {
-                        await db.collection('users').doc(auth.currentUser.uid).update(updateData);
-                        state.currentUserData.name = newName;
-                        if (updateData.avatar) state.currentUserData.avatar = updateData.avatar;
-                        state.tempAvatar = null;
-                        alert('プロフィールを更新しました！');
-                        state.view = 'home';
-                        renderApp();
+                        const myDocId = state.currentUserData.id;
+                        if (myDocId) {
+                            await db.collection('users').doc(myDocId).update(updateData);
+                            state.currentUserData.name = newName;
+                            if (updateData.avatar) state.currentUserData.avatar = updateData.avatar;
+                            state.tempAvatar = null;
+                            alert('プロフィールを更新しました！');
+                            state.view = 'home';
+                            renderApp();
+                        }
                     } catch (err) {
                         alert('エラー: ' + err.message);
                     }
@@ -1247,7 +1351,8 @@
                         file: state.selectedFile,
                         createdAt: nowTimestamp,
                         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                        unsent: false
+                        unsent: false,
+                        readUsers: [] // 初期状態では既読ゼロ
                     };
 
                     const roomId = state.activeRoomId;
