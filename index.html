@@ -243,6 +243,17 @@
                     const readUsers = m.readUsers || [];
                     const readCount = readUsers.length;
 
+                    // システムメッセージの描画
+                    if (m.isSystem) {
+                        return `
+                            <div class="flex justify-center my-2">
+                                <div class="px-3 py-1 rounded-xl text-xs bg-slate-200/60 dark:bg-slate-800 text-slate-400 italic shadow-sm">
+                                    ${escapeHtml(m.text)}
+                                </div>
+                            </div>
+                        `;
+                    }
+
                     let readLabelHtml = '';
                     if (isSelf) {
                         if (readCount >= totalPartners) {
@@ -799,6 +810,17 @@
                             const readCount = readUsers.length;
                             const totalPartners = Math.max(1, (activeRoom.members || []).length - 1);
 
+                            // システムメッセージの描画
+                            if (m.isSystem) {
+                                return `
+                                    <div class="flex justify-center my-2">
+                                        <div class="px-3 py-1 rounded-xl text-xs bg-slate-200/60 dark:bg-slate-800 text-slate-400 italic shadow-sm">
+                                            ${escapeHtml(m.text)}
+                                        </div>
+                                    </div>
+                                `;
+                            }
+
                             let readLabelHtml = '';
                             if (isSelf) {
                                 if (readCount >= totalPartners) {
@@ -1069,7 +1091,32 @@
                     }
 
                     try {
+                        // 1. グループ情報の更新
                         await db.collection('dms').doc(state.activeRoomId).update(updatePayload);
+
+                        // 2. トーク画面にシステム通知メッセージを自動送信
+                        const nowTimestamp = Date.now();
+                        const systemMsg = {
+                            senderId: 'system',
+                            senderName: 'システム',
+                            text: `${state.currentUserData.name} がグループ設定を変更しました`,
+                            createdAt: nowTimestamp,
+                            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                            unsent: false,
+                            isSystem: true,
+                            readUsers: [state.currentUserData.loginId]
+                        };
+
+                        await db.collection('messages').doc(state.activeRoomId).collection('chats').add(systemMsg);
+
+                        // ラストメッセージ情報も更新
+                        await db.collection('dms').doc(state.activeRoomId).set({
+                            lastMessage: `${state.currentUserData.name} がグループ設定を変更しました`,
+                            lastMessageTime: nowTimestamp,
+                            lastSenderId: state.currentUserData.loginId,
+                            unread: true
+                        }, { merge: true });
+
                         state.isGroupEditModalOpen = false;
                         state.tempGroupAvatar = null;
                         alert('グループ設定を更新しました！');
