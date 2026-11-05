@@ -4,13 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Reach</title>
-   
-    <!-- ファビコン（タブ用） -->
+    <!-- ファビコン・ホーム画面用アイコン -->
     <link rel="icon" type="image/png" href="./Reach.png">
-    
-    <!-- ▼ スマホのホーム画面用アイコンを追加 -->
     <link rel="apple-touch-icon" href="./Reach.png">
-   
+
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -204,7 +201,6 @@
                     const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     state.messages = docs.reverse();
 
-                    // チャット画面を開いているとき、未読のメッセージに自分のIDを既読リストに追加（arrayUnionで重複なし）
                     if (state.view === 'chat' && state.currentUserData) {
                         const myLoginId = state.currentUserData.loginId;
                         state.messages.forEach(async (m) => {
@@ -247,7 +243,6 @@
                     const readUsers = m.readUsers || [];
                     const readCount = readUsers.length;
 
-                    // 既読ラベルの計算
                     let readLabelHtml = '';
                     if (isSelf) {
                         if (readCount >= totalPartners) {
@@ -336,7 +331,9 @@
                     <div class="absolute top-4 right-4">${renderDarkModeButton()}</div>
                     <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-xl w-full max-w-md p-8 flex flex-col space-y-6 border border-slate-100 dark:border-slate-800 my-auto">
                         <div class="text-center space-y-2">
-                            <div class="w-16 h-16 bg-blue-500 rounded-2xl mx-auto flex items-center justify-center text-white text-3xl font-bold shadow-lg shadow-blue-500/30">💬</div>
+                            <div class="w-16 h-16 mx-auto flex items-center justify-center shadow-lg shadow-blue-500/30 overflow-hidden rounded-2xl">
+                                <img src="./Reach.png" alt="Reach Logo" class="w-full h-full object-cover">
+                            </div>
                             <h1 class="text-2xl font-bold text-slate-800 dark:text-slate-100">Reach</h1>
                             <p class="text-sm text-slate-500 dark:text-slate-400">${state.isSignupMode ? '新規アカウント登録' : 'ログイン'}</p>
                         </div>
@@ -353,7 +350,7 @@
                                     </div>
                                     <div>
                                         <label class="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">本名 (管理者確認用)</label>
-                                        <input type="text" id="realNameInput" required placeholder="例: 山田　太郎" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                        <input type="text" id="realNameInput" required placeholder="例: 山田 太郎" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                                     </div>
                                 </div>
                             ` : ''}
@@ -927,34 +924,9 @@
                             
                             const cred = await auth.createUserWithEmailAndPassword(email, password);
                             const authUid = cred.user.uid;
-                            
-                            let nextNum = 1;
-                            try {
-                                const counterRef = db.collection('metadata').doc('userCounter');
-                                await db.runTransaction(async (transaction) => {
-                                    const counterDoc = await transaction.get(counterRef);
-                                    if (counterDoc.exists && typeof counterDoc.data().current === 'number') {
-                                        nextNum = counterDoc.data().current + 1;
-                                    } else {
-                                        const allUsersSnap = await db.collection('users').get();
-                                        const numericIds = allUsersSnap.docs
-                                            .map(d => parseInt(d.id, 10))
-                                            .filter(n => !isNaN(n));
-                                        if (numericIds.length > 0) {
-                                            nextNum = Math.max(...numericIds) + 1;
-                                        }
-                                    }
-                                    transaction.set(counterRef, { current: nextNum }, { merge: true });
-                                });
-                            } catch (counterErr) {
-                                console.warn("カウンターの処理でエラーが発生したためフォールバックします:", counterErr);
-                            }
-
-                            const sequentialId = String(nextNum);
 
                             const userData = {
                                 auth_uid: authUid,
-                                numericId: sequentialId,
                                 loginId: loginId,
                                 name: displayName,
                                 realName: realName,
@@ -963,8 +935,8 @@
                                 createdAt: Date.now()
                             };
 
-                            await db.collection('users').doc(sequentialId).set(userData);
-                            state.currentUserData = { id: sequentialId, ...userData };
+                            await db.collection('users').doc(authUid).set(userData);
+                            state.currentUserData = { id: authUid, ...userData };
 
                         } else {
                             await auth.signInWithEmailAndPassword(email, password);
@@ -1352,7 +1324,7 @@
                         createdAt: nowTimestamp,
                         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                         unsent: false,
-                        readUsers: [] // 初期状態では既読ゼロ
+                        readUsers: []
                     };
 
                     const roomId = state.activeRoomId;
