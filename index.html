@@ -48,7 +48,7 @@
             view: 'home',
             activeRoomId: null,
             selectedFile: null,
-            replyToMessage: null, // 返信対象メッセージ
+            replyToMessage: null,
             tempAvatar: null,
             tempGroupAvatar: null,
             currentUserData: null,
@@ -57,11 +57,41 @@
             messages: [],
             unsubscribeMessages: null,
             isGroupModalOpen: false,
-            isGroupEditModalOpen: false
+            isGroupEditModalOpen: false,
+            isLoadingMore: false,
+            hasMoreMessages: true
         };
 
         const STORAGE_KEYS = { DARK_MODE: 'reach_dark_mode_v21' };
         function isDarkMode() { return localStorage.getItem(STORAGE_KEYS.DARK_MODE) === 'true'; }
+
+        // --- 日付フォーマット用ヘルパー ---
+        function formatDateLabel(timestamp) {
+            if (!timestamp) return '';
+            const msgDate = new Date(timestamp);
+            const now = new Date();
+            
+            const msgDateStr = msgDate.toDateString();
+            const nowStr = now.toDateString();
+            
+            const yesterday = new Date(now);
+            yesterday.setDate(now.getDate() - 1);
+            const yesterdayStr = yesterday.toDateString();
+
+            if (msgDateStr === nowStr) return '今日';
+            if (msgDateStr === yesterdayStr) return '昨日';
+
+            const days = ['日', '月', '火', '水', '木', '金', '土'];
+            const year = msgDate.getFullYear();
+            const month = msgDate.getMonth() + 1;
+            const date = msgDate.getDate();
+            const dayName = days[msgDate.getDay()];
+
+            if (year === now.getFullYear()) {
+                return `${month}月${date}日 (${dayName})`;
+            }
+            return `${year}年${month}月${date}日 (${dayName})`;
+        }
 
         // --- 3. 画像リサイズ・アバター描画 ---
         function resizeImage(file, maxWidth = 120, maxHeight = 120, quality = 0.75) {
@@ -134,7 +164,7 @@
                     if (doc && doc.exists) {
                         state.currentUserData = { id: doc.id, ...doc.data() };
                     } else {
-                        state.currentUserData = { id: user.uid, auth_uid: user.uid, loginId: user.email.split('@')[0], name: '名無し', realName: '', friends: [], avatar: null };
+                        state.currentUserData = { id: user.uid, auth_uid: user.uid, loginId: user.email.split('@')[0], name: '山田 太郎', realName: '', friends: [], avatar: null };
                     }
                     await fetchAllUsers();
                     await fetchDMsOnce();
@@ -195,12 +225,24 @@
         // リアルタイムメッセージ受信
         function subscribeMessages(roomId) {
             if (state.unsubscribeMessages) state.unsubscribeMessages();
+            state.hasMoreMessages = true;
+            state.isLoadingMore = false;
+
             state.unsubscribeMessages = db.collection('messages').doc(roomId).collection('chats')
                 .orderBy('createdAt', 'desc')
                 .limit(50)
                 .onSnapshot(async (snapshot) => {
                     const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    state.messages = docs.reverse();
+                    
+                    if (state.messages.length > 50) {
+                        const newLatestDocs = docs.reverse();
+                        const existingOldDocs = state.messages.slice(0, state.messages.length - 50);
+                        const docMap = new Map();
+                        [...existingOldDocs, ...newLatestDocs].forEach(m => docMap.set(m.id, m));
+                        state.messages = Array.from(docMap.values()).sort((a, b) => a.createdAt - b.createdAt);
+                    } else {
+                        state.messages = docs.reverse();
+                    }
 
                     if (state.view === 'chat' && state.currentUserData) {
                         const myLoginId = state.currentUserData.loginId;
@@ -228,6 +270,40 @@
                 });
         }
 
+        async function loadMoreMessages() {
+            if (state.isLoadingMore || !state.hasMoreMessages || state.messages.length === 0) return;
+            
+            state.isLoadingMore = true;
+            const container = document.getElementById('messageContainer');
+            const oldScrollHeight = container ? container.scrollHeight : 0;
+
+            const oldestMsg = state.messages[0];
+            try {
+                const snapshot = await db.collection('messages').doc(state.activeRoomId).collection('chats')
+                    .orderBy('createdAt', 'desc')
+                    .where('createdAt', '<', oldestMsg.createdAt)
+                    .limit(20)
+                    .get();
+
+                if (snapshot.empty) {
+                    state.hasMoreMessages = false;
+                } else {
+                    const olderDocs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).reverse();
+                    state.messages = [...olderDocs, ...state.messages];
+                    updateChatMessagesOnly();
+
+                    if (container) {
+                        const newScrollHeight = container.scrollHeight;
+                        container.scrollTop = newScrollHeight - oldScrollHeight;
+                    }
+                }
+            } catch (err) {
+                console.error("過去ログ取得エラー:", err);
+            } finally {
+                state.isLoadingMore = false;
+            }
+        }
+
         function updateChatMessagesOnly() {
             const container = document.getElementById('messageContainer');
             if (!container) return;
@@ -237,85 +313,123 @@
             const totalPartners = Math.max(1, (activeRoom.members || []).length - 1);
             const totalMessages = state.messages.length;
 
-            container.innerHTML = totalMessages === 0 
-                ? '<div class="text-center text-xs text-slate-400 py-10">メッセージやファイルを送信してみましょう！</div>' 
-                : state.messages.map((m) => {
-                    const isSelf = m.senderId === currentUser.loginId;
-                    const readUsers = m.readUsers || [];
-                    const readCount = readUsers.length;
+            const loadingHeader = state.hasMoreMessages ? `
+                <div class="text-center py-2 text-xs text-slate-400 font-semibold flex items-center justify-center space-x-1">
+                    <i data-lucide="arrow-up" class="w-3.5 h-3.5"></i>
+                    <span>上にスクロールして過去ログを取得</span>
+                </div>
+            ` : `
+                <div class="text-center py-2 text-[11px] text-slate-400">これが最古のメッセージです</div>
+            `;
 
-                    if (m.isSystem) {
-                        return `
-                            <div class="flex justify-center my-2">
-                                <div class="px-3 py-1 rounded-xl text-xs bg-slate-200/60 dark:bg-slate-800 text-slate-400 italic shadow-sm">
-                                    ${escapeHtml(m.text)}
-                                </div>
-                            </div>
-                        `;
-                    }
+            let lastDateLabel = '';
+            let messagesHtml = '';
 
-                    let readLabelHtml = '';
-                    if (isSelf) {
-                        if (readCount >= totalPartners) {
-                            readLabelHtml = '<span class="text-[10px] font-semibold text-blue-500 dark:text-blue-400">既読</span>';
-                        } else if (readCount > 0) {
-                            readLabelHtml = `<span class="text-[10px] font-semibold text-blue-500 dark:text-blue-400">既読 ${readCount}</span>`;
-                        } else {
-                            readLabelHtml = '<span class="text-[10px] text-slate-400">未読</span>';
-                        }
-                    }
-
-                    if (m.unsent) {
-                        return `
-                            <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'}">
-                                <div class="px-4 py-2 rounded-xl text-xs bg-slate-200/60 dark:bg-slate-800 text-slate-400 italic">
-                                    メッセージの送信を取り消しました
-                                </div>
-                            </div>
-                        `;
-                    }
-
-                    // 引用返信部分のUI
-                    const replyHtml = m.replyTo ? `
-                        <div class="mb-1.5 p-1.5 rounded-lg bg-black/10 dark:bg-white/10 text-xs border-l-2 border-blue-400 dark:border-blue-300">
-                            <div class="font-bold text-[11px] opacity-80">${escapeHtml(m.replyTo.name)}</div>
-                            <div class="truncate text-[11px] opacity-70">${escapeHtml(m.replyTo.text || '[ファイル]')}</div>
-                        </div>
-                    ` : '';
-
-                    return `
-                        <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'} group">
-                            <span class="text-xs text-slate-400 mb-1 px-1">${escapeHtml(m.senderName)}</span>
-                            <div class="flex items-end space-x-2 max-w-[85%] ${isSelf ? 'flex-row-reverse space-x-reverse' : ''}">
-                                <div class="px-4 py-2.5 rounded-2xl text-sm shadow-sm ${isSelf ? 'bg-blue-500 text-white rounded-br-none' : 'bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-bl-none border border-slate-100 dark:border-slate-800'}">
-                                    ${replyHtml}
-                                    ${m.text ? `<div>${escapeHtml(m.text)}</div>` : ''}
-                                    ${m.file ? renderFileContent(m.file) : ''}
-                                </div>
-                                <div class="flex flex-col items-end text-[10px] text-slate-400 flex-shrink-0 space-y-0.5">
-                                    <span>${escapeHtml(m.time)}</span>
-                                    ${readLabelHtml}
-                                </div>
-                                <!-- 操作メニュー（ピン留め・返信・取り消し） -->
-                                <div class="opacity-65 group-hover:opacity-100 transition-opacity flex items-center space-x-1.5 px-1 select-none">
-                                    <button data-reply-id="${escapeHtml(m.id)}" class="reply-btn text-[11px] text-slate-400 hover:text-blue-500" title="返信">
-                                        <i data-lucide="reply" class="w-3.5 h-3.5"></i>
-                                    </button>
-                                    <button data-pin-text="${escapeHtml(m.text || '[ファイル]')}" data-pin-name="${escapeHtml(m.senderName)}" class="pin-btn text-[11px] text-slate-400 hover:text-amber-500" title="ピン留め">
-                                        <i data-lucide="pin" class="w-3.5 h-3.5"></i>
-                                    </button>
-                                    ${isSelf ? `
-                                        <button data-unsend-id="${escapeHtml(m.id)}" class="unsend-btn text-[11px] text-slate-400 hover:text-red-400" title="送信取り消し">
-                                            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-                                        </button>
-                                    ` : ''}
-                                </div>
+            state.messages.forEach((m) => {
+                const dateLabel = formatDateLabel(m.createdAt);
+                
+                // 日付が変わったタイミングで日付区切りバッジを挿入
+                if (dateLabel && dateLabel !== lastDateLabel) {
+                    messagesHtml += `
+                        <div class="flex items-center justify-center my-4">
+                            <div class="px-3 py-1 rounded-full text-[11px] font-bold bg-slate-200/80 dark:bg-slate-800 text-slate-500 dark:text-slate-400 shadow-sm border border-slate-300/40 dark:border-slate-700/50 select-none">
+                                ${escapeHtml(dateLabel)}
                             </div>
                         </div>
                     `;
-                }).join('');
+                    lastDateLabel = dateLabel;
+                }
 
-            container.scrollTop = container.scrollHeight;
+                const isSelf = m.senderId === currentUser.loginId;
+                const readUsers = m.readUsers || [];
+                const readCount = readUsers.length;
+
+                if (m.isSystem) {
+                    messagesHtml += `
+                        <div class="flex justify-center my-2">
+                            <div class="px-3 py-1 rounded-xl text-xs bg-slate-200/60 dark:bg-slate-800 text-slate-400 italic shadow-sm">
+                                ${escapeHtml(m.text)}
+                            </div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                let readLabelHtml = '';
+                if (isSelf) {
+                    if (readCount >= totalPartners) {
+                        readLabelHtml = '<span class="text-[10px] font-semibold text-blue-500 dark:text-blue-400">既読</span>';
+                    } else if (readCount > 0) {
+                        readLabelHtml = `<span class="text-[10px] font-semibold text-blue-500 dark:text-blue-400">既読 ${readCount}</span>`;
+                    } else {
+                        readLabelHtml = '<span class="text-[10px] text-slate-400">未読</span>';
+                    }
+                }
+
+                if (m.unsent) {
+                    messagesHtml += `
+                        <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'} my-2">
+                            <div class="px-4 py-2 rounded-xl text-xs bg-slate-200/60 dark:bg-slate-800 text-slate-400 italic">
+                                メッセージの送信を取り消しました
+                            </div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                const replyHtml = m.replyTo ? `
+                    <div class="mb-1.5 p-1.5 rounded-lg bg-black/10 dark:bg-white/10 text-xs border-l-2 border-blue-400 dark:border-blue-300">
+                        <div class="font-bold text-[11px] opacity-80">${escapeHtml(m.replyTo.name)}</div>
+                        <div class="truncate text-[11px] opacity-70">${escapeHtml(m.replyTo.text || '[ファイル]')}</div>
+                    </div>
+                ` : '';
+
+                messagesHtml += `
+                    <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'} group my-2">
+                        <span class="text-xs text-slate-400 mb-1 px-1">${escapeHtml(m.senderName)}</span>
+                        <div class="flex items-end space-x-2 max-w-[85%] ${isSelf ? 'flex-row-reverse space-x-reverse' : ''}">
+                            <div class="px-4 py-2.5 rounded-2xl text-sm shadow-sm ${isSelf ? 'bg-blue-500 text-white rounded-br-none' : 'bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-bl-none border border-slate-100 dark:border-slate-800'}">
+                                ${replyHtml}
+                                ${m.text ? `<div>${escapeHtml(m.text)}</div>` : ''}
+                                ${m.file ? renderFileContent(m.file) : ''}
+                            </div>
+                            <div class="flex flex-col items-end text-[10px] text-slate-400 flex-shrink-0 space-y-0.5">
+                                <span>${escapeHtml(m.time)}</span>
+                                ${readLabelHtml}
+                            </div>
+                            <div class="opacity-65 group-hover:opacity-100 transition-opacity flex items-center space-x-1 px-1 select-none">
+                                <button data-reply-id="${escapeHtml(m.id)}" class="reply-btn text-[11px] text-slate-400 hover:text-blue-500 p-1" title="返信">
+                                    <i data-lucide="reply" class="w-3.5 h-3.5"></i>
+                                </button>
+                                <button data-pin-text="${escapeHtml(m.text || '[ファイル]')}" data-pin-name="${escapeHtml(m.senderName)}" class="pin-btn text-[11px] text-slate-400 hover:text-amber-500 p-1" title="ピン留め">
+                                    <i data-lucide="pin" class="w-3.5 h-3.5"></i>
+                                </button>
+                                ${isSelf ? `
+                                    <button data-unsend-id="${escapeHtml(m.id)}" class="unsend-btn text-[11px] text-slate-400 hover:text-red-400 p-1" title="送信取り消し">
+                                        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                                    </button>
+                                ` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            container.innerHTML = loadingHeader + (totalMessages === 0 
+                ? '<div class="text-center text-xs text-slate-400 py-10">メッセージやファイルを送信してみましょう！</div>' 
+                : messagesHtml);
+
+            if (!container.dataset.initialized) {
+                container.scrollTop = container.scrollHeight;
+                container.dataset.initialized = 'true';
+            }
+
+            container.onscroll = () => {
+                if (container.scrollTop === 0) {
+                    loadMoreMessages();
+                }
+            };
+
             lucide.createIcons();
             attachMessageActionEvents();
         }
@@ -791,7 +905,6 @@
                 }
             }, 0);
 
-            // ピン留めメッセージの表示
             const pinned = activeRoom.pinnedMessage;
 
             return `
@@ -834,82 +947,12 @@
                         </div>
                     ` : ''}
 
-                    <div id="messageContainer" class="flex-1 overflow-y-auto p-4 space-y-4">
-                        ${state.messages.length === 0 ? '<div class="text-center text-xs text-slate-400 py-10">メッセージやファイルを送信してみましょう！</div>' : ''}
-                        ${state.messages.map((m) => {
-                            const isSelf = m.senderId === currentUser.loginId;
-                            const readUsers = m.readUsers || [];
-                            const readCount = readUsers.length;
-                            const totalPartners = Math.max(1, (activeRoom.members || []).length - 1);
-
-                            if (m.isSystem) {
-                                return `
-                                    <div class="flex justify-center my-2">
-                                        <div class="px-3 py-1 rounded-xl text-xs bg-slate-200/60 dark:bg-slate-800 text-slate-400 italic shadow-sm">
-                                            ${escapeHtml(m.text)}
-                                        </div>
-                                    </div>
-                                `;
-                            }
-
-                            let readLabelHtml = '';
-                            if (isSelf) {
-                                if (readCount >= totalPartners) {
-                                    readLabelHtml = '<span class="text-[10px] font-semibold text-blue-500 dark:text-blue-400">既読</span>';
-                                } else if (readCount > 0) {
-                                    readLabelHtml = `<span class="text-[10px] font-semibold text-blue-500 dark:text-blue-400">既読 ${readCount}</span>`;
-                                } else {
-                                    readLabelHtml = '<span class="text-[10px] text-slate-400">未読</span>';
-                                }
-                            }
-
-                            if (m.unsent) {
-                                return `
-                                    <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'}">
-                                        <div class="px-4 py-2 rounded-xl text-xs bg-slate-200/60 dark:bg-slate-800 text-slate-400 italic">
-                                            メッセージの送信を取り消しました
-                                        </div>
-                                    </div>
-                                `;
-                            }
-
-                            const replyHtml = m.replyTo ? `
-                                <div class="mb-1.5 p-1.5 rounded-lg bg-black/10 dark:bg-white/10 text-xs border-l-2 border-blue-400 dark:border-blue-300">
-                                    <div class="font-bold text-[11px] opacity-80">${escapeHtml(m.replyTo.name)}</div>
-                                    <div class="truncate text-[11px] opacity-70">${escapeHtml(m.replyTo.text || '[ファイル]')}</div>
-                                </div>
-                            ` : '';
-
-                            return `
-                                <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'} group">
-                                    <span class="text-xs text-slate-400 mb-1 px-1">${escapeHtml(m.senderName)}</span>
-                                    <div class="flex items-end space-x-2 max-w-[85%] ${isSelf ? 'flex-row-reverse space-x-reverse' : ''}">
-                                        <div class="px-4 py-2.5 rounded-2xl text-sm shadow-sm ${isSelf ? 'bg-blue-500 text-white rounded-br-none' : 'bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-bl-none border border-slate-100 dark:border-slate-800'}">
-                                            ${replyHtml}
-                                            ${m.text ? `<div>${escapeHtml(m.text)}</div>` : ''}
-                                            ${m.file ? renderFileContent(m.file) : ''}
-                                        </div>
-                                        <div class="flex flex-col items-end text-[10px] text-slate-400 flex-shrink-0 space-y-0.5">
-                                            <span>${escapeHtml(m.time)}</span>
-                                            ${readLabelHtml}
-                                        </div>
-                                        <div class="opacity-0 group-hover:opacity-100 transition flex items-center space-x-1 px-1">
-                                            <button data-reply-id="${escapeHtml(m.id)}" class="reply-btn text-[11px] text-slate-400 hover:text-blue-500" title="返信">
-                                                <i data-lucide="reply" class="w-3.5 h-3.5"></i>
-                                            </button>
-                                            <button data-pin-text="${escapeHtml(m.text || '[ファイル]')}" data-pin-name="${escapeHtml(m.senderName)}" class="pin-btn text-[11px] text-slate-400 hover:text-amber-500" title="ピン留め">
-                                                <i data-lucide="pin" class="w-3.5 h-3.5"></i>
-                                            </button>
-                                            ${isSelf ? `
-                                                <button data-unsend-id="${escapeHtml(m.id)}" class="unsend-btn text-[11px] text-slate-400 hover:text-red-400" title="送信取り消し">
-                                                    <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-                                                </button>
-                                            ` : ''}
-                                        </div>
-                                    </div>
-                                </div>
-                            `;
-                        }).join('')}
+                    <div id="messageContainer" class="flex-1 overflow-y-auto p-4 space-y-2">
+                        <div class="text-center py-2 text-xs text-slate-400 font-semibold flex items-center justify-center space-x-1">
+                            <i data-lucide="arrow-up" class="w-3.5 h-3.5"></i>
+                            <span>上にスクロールして過去ログを取得</span>
+                        </div>
+                        <div class="text-center text-xs text-slate-400 py-10">読み込み中...</div>
                     </div>
 
                     <!-- 添付ファイルプレビュー -->
@@ -954,7 +997,6 @@
         }
 
         function attachMessageActionEvents() {
-            // 送信取り消し
             document.querySelectorAll('.unsend-btn').forEach(btn => {
                 btn.onclick = async (e) => {
                     e.stopPropagation();
@@ -973,7 +1015,6 @@
                 };
             });
 
-            // 返信ボタン
             document.querySelectorAll('.reply-btn').forEach(btn => {
                 btn.onclick = (e) => {
                     e.stopPropagation();
@@ -990,7 +1031,6 @@
                 };
             });
 
-            // ピン留めボタン
             document.querySelectorAll('.pin-btn').forEach(btn => {
                 btn.onclick = async (e) => {
                     e.stopPropagation();
