@@ -21,10 +21,10 @@
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
 </head>
-<body class="bg-slate-100 dark:bg-slate-950 h-screen flex flex-col overflow-hidden text-slate-800 dark:text-slate-100 transition-colors">
+<body class="bg-slate-100 dark:bg-slate-950 min-h-screen flex flex-col text-slate-800 dark:text-slate-100 transition-colors">
 
     <!-- App Root Container -->
-    <div id="app" class="flex-1 flex flex-col h-full w-full"></div>
+    <div id="app" class="flex-1 flex flex-col min-h-screen w-full"></div>
 
     <script>
         // --- 1. Firebase設定 ---
@@ -59,7 +59,11 @@
             isGroupModalOpen: false,
             isGroupEditModalOpen: false,
             isLoadingMore: false,
-            hasMoreMessages: true
+            hasMoreMessages: true,
+            // 未読プレビュー用状態
+            isPeekModalOpen: false,
+            peekRoomId: null,
+            peekRoomName: ''
         };
 
         const STORAGE_KEYS = { DARK_MODE: 'reach_dark_mode_v21' };
@@ -208,12 +212,18 @@
                             lastMessage: 'タップしてチャットを始めましょう',
                             lastMessageTime: 0,
                             lastSenderId: '',
-                            unread: false
+                            unread: false,
+                            isPinned: false
                         });
                     }
                 });
 
-                fetchedDms.sort((a, b) => (b.lastMessageTime || 0) - (a.lastMessageTime || 0));
+                // ★ 変更点③: ピン留め（isPinned）優先 ＋ メッセージ日時順ソート
+                fetchedDms.sort((a, b) => {
+                    if (a.isPinned && !b.isPinned) return -1;
+                    if (!a.isPinned && b.isPinned) return 1;
+                    return (b.lastMessageTime || 0) - (a.lastMessageTime || 0);
+                });
 
                 state.dms = fetchedDms.slice(0, 10);
                 state.allDmsCount = fetchedDms.length;
@@ -328,7 +338,6 @@
             state.messages.forEach((m) => {
                 const dateLabel = formatDateLabel(m.createdAt);
                 
-                // 日付が変わったタイミングで日付区切りバッジを挿入
                 if (dateLabel && dateLabel !== lastDateLabel) {
                     messagesHtml += `
                         <div class="flex items-center justify-center my-4">
@@ -569,16 +578,29 @@
                                 const isUnread = room.lastSenderId && room.lastSenderId !== currentUser.loginId && room.unread === true;
 
                                 return `
-                                    <div data-room-id="${room.id}" class="room-item flex items-center justify-between p-3.5 rounded-2xl cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60 border border-slate-100 dark:border-slate-800 transition shadow-sm">
+                                    <div data-room-id="${room.id}" class="room-item flex items-center justify-between p-3.5 rounded-2xl cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60 border ${room.isPinned ? 'border-amber-300 dark:border-amber-700/60 bg-amber-50/40 dark:bg-amber-950/20' : 'border-slate-100 dark:border-slate-800'} transition shadow-sm">
                                         <div class="flex items-center space-x-3.5 min-w-0 flex-1">
                                             ${renderAvatar(displayUserOrGroup, 'w-12 h-12', 'text-lg')}
                                             <div class="flex-1 min-w-0 pr-2">
                                                 <div class="flex items-center justify-between">
-                                                    <div class="font-bold text-slate-800 dark:text-slate-100 text-sm truncate">${escapeHtml(displayName)} ${isGroup ? `<span class="text-xs font-normal text-slate-400">(${room.members.length})</span>` : ''}</div>
-                                                    ${isUnread ? '<span class="bg-red-500 text-white text-[10px] px-2 py-0.5 rounded-full font-bold">新着</span>' : ''}
+                                                    <div class="font-bold text-slate-800 dark:text-slate-100 text-sm truncate flex items-center space-x-1.5">
+                                                        ${room.isPinned ? '<i data-lucide="pin" class="w-3.5 h-3.5 text-amber-500 fill-amber-500 flex-shrink-0"></i>' : ''}
+                                                        <span class="truncate">${escapeHtml(displayName)}</span>
+                                                        ${isGroup ? `<span class="text-xs font-normal text-slate-400 flex-shrink-0">(${room.members.length})</span>` : ''}
+                                                    </div>
+                                                    ${isUnread ? '<span class="bg-red-500 text-white text-[10px] px-2 py-0.5 rounded-full font-bold ml-1 flex-shrink-0">新着</span>' : ''}
                                                 </div>
                                                 <div class="text-xs text-slate-400 truncate mt-0.5">${escapeHtml(room.lastMessage || 'タップしてチャットを開く')}</div>
                                             </div>
+                                        </div>
+                                        <!-- ★ 変更点②③: トークピン留め＆未読プレビューボタン -->
+                                        <div class="flex items-center space-x-1 flex-shrink-0 ml-2">
+                                            <button data-toggle-pin-room="${room.id}" data-pinned="${room.isPinned ? 'true' : 'false'}" class="toggle-pin-room-btn p-2 text-slate-400 hover:text-amber-500 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl transition" title="${room.isPinned ? 'ピン留め解除' : 'トークをピン留め'}">
+                                                <i data-lucide="pin" class="w-4 h-4 ${room.isPinned ? 'text-amber-500 fill-amber-500' : ''}"></i>
+                                            </button>
+                                            <button data-peek-room-id="${room.id}" data-peek-name="${escapeHtml(displayName)}" class="peek-room-btn p-2 text-slate-400 hover:text-blue-500 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl transition" title="未読のまま見る">
+                                                <i data-lucide="eye" class="w-4 h-4"></i>
+                                            </button>
                                         </div>
                                     </div>
                                 `;
@@ -622,6 +644,36 @@
 
                     ${renderGroupModal(friendUsers)}
                     ${renderGroupEditModal()}
+                    ${renderPeekModal()}
+                </div>
+            `;
+        }
+
+        // ★ 変更点②: 未読のまま見る（プレビューモーダル）描画関数
+        function renderPeekModal() {
+            if (!state.isPeekModalOpen || !state.peekRoomId) return '';
+            
+            return `
+                <div class="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                    <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col border border-slate-100 dark:border-slate-800 overflow-hidden">
+                        <div class="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-800/50">
+                            <div class="flex items-center space-x-2">
+                                <i data-lucide="eye" class="w-4 h-4 text-blue-500"></i>
+                                <h3 class="font-bold text-slate-800 dark:text-slate-100 text-sm">${escapeHtml(state.peekRoomName)} <span class="text-xs font-normal text-slate-400">(未読プレビュー)</span></h3>
+                            </div>
+                            <button id="closePeekModalBtn" class="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg">
+                                <i data-lucide="x" class="w-5 h-5"></i>
+                            </button>
+                        </div>
+                        <div id="peekMessageContainer" class="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50/50 dark:bg-slate-950/40">
+                            <div class="text-center text-xs text-slate-400 py-6">メッセージを読み込み中...</div>
+                        </div>
+                        <div class="p-3 border-t border-slate-100 dark:border-slate-800 text-center bg-white dark:bg-slate-900">
+                            <button id="closePeekModalBtnBottom" class="w-full py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold rounded-xl transition">
+                                閉じる
+                            </button>
+                        </div>
+                    </div>
                 </div>
             `;
         }
@@ -1420,6 +1472,46 @@
                 };
             });
 
+            // ★ 変更点③: トークピン留めの切り替えイベント
+            document.querySelectorAll('.toggle-pin-room-btn').forEach(btn => {
+                btn.onclick = async (e) => {
+                    e.stopPropagation();
+                    const roomId = btn.getAttribute('data-toggle-pin-room');
+                    const isCurrentlyPinned = btn.getAttribute('data-pinned') === 'true';
+
+                    try {
+                        await db.collection('dms').doc(roomId).set({
+                            isPinned: !isCurrentlyPinned
+                        }, { merge: true });
+
+                        await fetchDMsOnce();
+                        renderApp();
+                    } catch (err) {
+                        alert('ピン留めの更新に失敗しました: ' + err.message);
+                    }
+                };
+            });
+
+            // ★ 変更点②: 未読のまま見る（プレビュー）ボタンイベント
+            document.querySelectorAll('.peek-room-btn').forEach(btn => {
+                btn.onclick = (e) => {
+                    e.stopPropagation();
+                    const roomId = btn.getAttribute('data-peek-room-id');
+                    const roomName = btn.getAttribute('data-peek-name');
+
+                    state.isPeekModalOpen = true;
+                    state.peekRoomId = roomId;
+                    state.peekRoomName = roomName;
+                    renderApp();
+                    fetchPeekMessages(roomId);
+                };
+            });
+
+            const closePeekBtn = document.getElementById('closePeekModalBtn');
+            const closePeekBtnBottom = document.getElementById('closePeekModalBtnBottom');
+            if (closePeekBtn) closePeekBtn.onclick = () => { state.isPeekModalOpen = false; renderApp(); };
+            if (closePeekBtnBottom) closePeekBtnBottom.onclick = () => { state.isPeekModalOpen = false; renderApp(); };
+
             const backToHomeBtn = document.getElementById('backToHomeBtn');
             if (backToHomeBtn) {
                 backToHomeBtn.onclick = () => {
@@ -1555,6 +1647,52 @@
             }
 
             attachMessageActionEvents();
+        }
+
+        // ★ 変更点②: 未読を維持したままメッセージを取得・表示する関数
+        async function fetchPeekMessages(roomId) {
+            const container = document.getElementById('peekMessageContainer');
+            if (!container) return;
+
+            try {
+                const snapshot = await db.collection('messages').doc(roomId).collection('chats')
+                    .orderBy('createdAt', 'desc')
+                    .limit(30)
+                    .get();
+
+                if (snapshot.empty) {
+                    container.innerHTML = '<div class="text-center text-xs text-slate-400 py-6">メッセージがありません</div>';
+                    return;
+                }
+
+                const msgs = snapshot.docs.map(doc => doc.data()).reverse();
+                const myLoginId = state.currentUserData.loginId;
+
+                container.innerHTML = msgs.map(m => {
+                    const isSelf = m.senderId === myLoginId;
+                    if (m.isSystem) {
+                        return `<div class="text-center text-[11px] text-slate-400 py-1 font-mono">${escapeHtml(m.text)}</div>`;
+                    }
+                    if (m.unsent) {
+                        return `<div class="flex ${isSelf ? 'justify-end' : 'justify-start'}"><div class="text-xs text-slate-400 italic bg-slate-200/50 dark:bg-slate-800 px-3 py-1.5 rounded-xl">送信取り消しされたメッセージ</div></div>`;
+                    }
+                    return `
+                        <div class="flex flex-col ${isSelf ? 'items-end' : 'items-start'}">
+                            <span class="text-[10px] text-slate-400 mb-0.5 px-1">${escapeHtml(m.senderName)}</span>
+                            <div class="px-3.5 py-2 rounded-2xl text-xs max-w-[80%] ${isSelf ? 'bg-blue-500 text-white rounded-br-none' : 'bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 rounded-bl-none border border-slate-100 dark:border-slate-700 shadow-sm'}">
+                                ${m.text ? `<div>${escapeHtml(m.text)}</div>` : ''}
+                                ${m.file ? `<div class="text-[11px] underline opacity-80 mt-0.5">[ファイル: ${escapeHtml(m.file.name)}]</div>` : ''}
+                            </div>
+                            <span class="text-[9px] text-slate-400 mt-0.5 px-1">${escapeHtml(m.time)}</span>
+                        </div>
+                    `;
+                }).join('');
+                
+                container.scrollTop = container.scrollHeight;
+                lucide.createIcons();
+            } catch (err) {
+                container.innerHTML = `<div class="text-center text-xs text-red-400 py-6">取得エラー: ${escapeHtml(err.message)}</div>`;
+            }
         }
 
         // 初期描画実行

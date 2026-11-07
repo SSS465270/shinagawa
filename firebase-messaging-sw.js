@@ -1,8 +1,8 @@
-// Firebase のバックグラウンドメッセージング用 Service Worker
+// FirebaseのCompat版SDKをService Worker内で読み込み
 importScripts('https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js');
 importScripts('https://www.gstatic.com/firebasejs/10.8.0/firebase-messaging-compat.js');
 
-// ご自身のプロジェクト設定
+// アプリの初期設定
 firebase.initializeApp({
     apiKey: "AIzaSyA6Dbr9A6AUexhH-iCUr3lyiXx-2I5vpY8",
     authDomain: "chats-36528.firebaseapp.com",
@@ -14,13 +14,12 @@ firebase.initializeApp({
 
 const messaging = firebase.messaging();
 
-// アプリがバックグラウンドにあるときの通知受信処理
+// バックグラウンドでの通知受信時の処理
 messaging.onBackgroundMessage((payload) => {
-    console.log('[firebase-messaging-sw.js] バックグラウンドメッセージを受信しました:', payload);
-    const notificationTitle = payload.notification.title;
+    const notificationTitle = payload.notification.title || 'Reach';
     const notificationOptions = {
-        body: payload.notification.body,
-        icon: '/favicon.ico'
+        body: payload.notification.body || '新しいメッセージが届きました',
+        icon: './Reach.png'
     };
 
     self.registration.showNotification(notificationTitle, notificationOptions);
