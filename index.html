@@ -153,34 +153,51 @@
             });
         }
 
-        // --- 4. Firebase認証・データ取得 ---
-        auth.onAuthStateChanged(async (user) => {
-            if (user) {
-                try {
-                    let doc = await db.collection('users').doc(user.uid).get();
-                    if (!doc.exists) {
-                        const snap = await db.collection('users').where('auth_uid', '==', user.uid).limit(1).get();
-                        if (!snap.empty) {
-                            doc = snap.docs[0];
-                        }
-                    }
+       // --- 4. Firebase認証・データ取得 ---
+auth.onAuthStateChanged(async (user) => {
+    if (user) {
+        try {
+            // 1. まず現在のログインUID（auth.currentUser.uid）のドキュメントを直接取得してみる
+            let userDocRef = db.collection('users').doc(user.uid);
+            let doc = await userDocRef.get();
 
-                    if (doc && doc.exists) {
-                        state.currentUserData = { id: doc.id, ...doc.data() };
-                    } else {
-                        state.currentUserData = { id: user.uid, auth_uid: user.uid, loginId: user.email.split('@')[0], name: '山田 太郎', realName: '', friends: [], avatar: null };
-                    }
-                    await fetchAllUsers();
-                    await fetchDMsOnce();
-                } catch (err) {
-                    console.error("データ取得エラー:", err);
+            // 2. なければ auth_uid フィールドで検索
+            if (!doc.exists) {
+                const snap = await db.collection('users').where('auth_uid', '==', user.uid).limit(1).get();
+                if (!snap.empty) {
+                    doc = snap.docs[0];
+                    userDocRef = doc.ref;
                 }
-            } else {
-                state.currentUserData = null;
-                if (state.unsubscribeMessages) state.unsubscribeMessages();
             }
-            renderApp();
-        });
+
+            // 3. それでも存在しない場合は、現在のUIDをドキュメントIDとして新規自動作成する
+            if (!doc.exists) {
+                const defaultUserData = {
+                    auth_uid: user.uid,
+                    loginId: user.email ? user.email.split('@')[0] : 'user_' + user.uid.slice(0, 5),
+                    name: '山田 太郎',
+                    realName: '',
+                    friends: [],
+                    avatar: null,
+                    createdAt: Date.now()
+                };
+                await userDocRef.set(defaultUserData);
+                state.currentUserData = { id: user.uid, ...defaultUserData };
+            } else {
+                state.currentUserData = { id: userDocRef.id, ...doc.data() };
+            }
+
+            await fetchAllUsers();
+            await fetchDMsOnce();
+        } catch (err) {
+            console.error("データ取得エラー:", err);
+        }
+    } else {
+        state.currentUserData = null;
+        if (state.unsubscribeMessages) state.unsubscribeMessages();
+    }
+    renderApp();
+});
 
         async function fetchAllUsers() {
             try {
