@@ -227,14 +227,18 @@ auth.onAuthStateChanged(async (user) => {
                             lastMessageTime: 0,
                             lastSenderId: '',
                             unread: false,
-                            isPinned: false
+                            pinnedUsers: {}
                         });
                     }
                 });
 
+                // ユーザーごとのピン留め状態（pinnedUsers）に基づいてソート
+                const myLoginId = state.currentUserData.loginId;
                 fetchedDms.sort((a, b) => {
-                    if (a.isPinned && !b.isPinned) return -1;
-                    if (!a.isPinned && b.isPinned) return 1;
+                    const aPinned = a.pinnedUsers && a.pinnedUsers[myLoginId] === true;
+                    const bPinned = b.pinnedUsers && b.pinnedUsers[myLoginId] === true;
+                    if (aPinned && !bPinned) return -1;
+                    if (!aPinned && bPinned) return 1;
                     return (b.lastMessageTime || 0) - (a.lastMessageTime || 0);
                 });
 
@@ -286,7 +290,7 @@ auth.onAuthStateChanged(async (user) => {
                     }
                     
                     if (state.view === 'chat') {
-                        updateChatMessagesOnly(true); // 初回や新規データ受信時に最下部へスクロール
+                        updateChatMessagesOnly(true);
                     } else {
                         renderApp();
                     }
@@ -441,7 +445,6 @@ auth.onAuthStateChanged(async (user) => {
                 ? '<div class="text-center text-xs text-slate-400 py-10">メッセージやファイルを送信してみましょう！</div>' 
                 : messagesHtml);
 
-            // トークルームを開いた瞬間や初回読み込み時に最下部へ強制スクロール
             if (shouldScrollToBottom || !container.dataset.initialized) {
                 container.scrollTop = container.scrollHeight;
                 container.dataset.initialized = 'true';
@@ -544,6 +547,7 @@ auth.onAuthStateChanged(async (user) => {
 
         function renderHomeScreen(currentUser) {
             const friendUsers = state.allUsers.filter(u => (currentUser.friends || []).includes(u.loginId));
+            const myLoginId = currentUser.loginId;
 
             return `
                 <div class="flex-1 flex flex-col h-screen bg-white dark:bg-slate-900 max-w-xl mx-auto w-full shadow-lg border-x border-slate-200 dark:border-slate-800 relative overflow-hidden">
@@ -590,15 +594,16 @@ auth.onAuthStateChanged(async (user) => {
                                 }
 
                                 const isUnread = room.lastSenderId && room.lastSenderId !== currentUser.loginId && room.unread === true;
+                                const isPinned = room.pinnedUsers && room.pinnedUsers[myLoginId] === true;
 
                                 return `
-                                    <div data-room-id="${room.id}" class="room-item flex items-center justify-between p-3.5 rounded-2xl cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60 border ${room.isPinned ? 'border-amber-300 dark:border-amber-700/60 bg-amber-50/40 dark:bg-amber-950/20' : 'border-slate-100 dark:border-slate-800'} transition shadow-sm">
+                                    <div data-room-id="${room.id}" class="room-item flex items-center justify-between p-3.5 rounded-2xl cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60 border ${isPinned ? 'border-amber-300 dark:border-amber-700/60 bg-amber-50/40 dark:bg-amber-950/20' : 'border-slate-100 dark:border-slate-800'} transition shadow-sm">
                                         <div class="flex items-center space-x-3.5 min-w-0 flex-1">
                                             ${renderAvatar(displayUserOrGroup, 'w-12 h-12', 'text-lg')}
                                             <div class="flex-1 min-w-0 pr-2">
                                                 <div class="flex items-center justify-between">
                                                     <div class="font-bold text-slate-800 dark:text-slate-100 text-sm truncate flex items-center space-x-1.5">
-                                                        ${room.isPinned ? '<i data-lucide="pin" class="w-3.5 h-3.5 text-amber-500 fill-amber-500 flex-shrink-0"></i>' : ''}
+                                                        ${isPinned ? '<i data-lucide="pin" class="w-3.5 h-3.5 text-amber-500 fill-amber-500 flex-shrink-0"></i>' : ''}
                                                         <span class="truncate">${escapeHtml(displayName)}</span>
                                                         ${isGroup ? `<span class="text-xs font-normal text-slate-400 flex-shrink-0">(${room.members.length})</span>` : ''}
                                                     </div>
@@ -608,8 +613,8 @@ auth.onAuthStateChanged(async (user) => {
                                             </div>
                                         </div>
                                         <div class="flex items-center space-x-1 flex-shrink-0 ml-2">
-                                            <button data-toggle-pin-room="${room.id}" data-pinned="${room.isPinned ? 'true' : 'false'}" class="toggle-pin-room-btn p-2 text-slate-400 hover:text-amber-500 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl transition" title="${room.isPinned ? 'ピン留め解除' : 'トークをピン留め'}">
-                                                <i data-lucide="pin" class="w-4 h-4 ${room.isPinned ? 'text-amber-500 fill-amber-500' : ''}"></i>
+                                            <button data-toggle-pin-room="${room.id}" data-pinned="${isPinned ? 'true' : 'false'}" class="toggle-pin-room-btn p-2 text-slate-400 hover:text-amber-500 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl transition" title="${isPinned ? 'ピン留め解除' : 'トークをピン留め'}">
+                                                <i data-lucide="pin" class="w-4 h-4 ${isPinned ? 'text-amber-500 fill-amber-500' : ''}"></i>
                                             </button>
                                             <button data-peek-room-id="${room.id}" data-peek-name="${escapeHtml(displayName)}" class="peek-room-btn p-2 text-slate-400 hover:text-blue-500 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl transition" title="未読のまま見る">
                                                 <i data-lucide="eye" class="w-4 h-4"></i>
@@ -1374,7 +1379,8 @@ auth.onAuthStateChanged(async (user) => {
                             lastMessage: 'グループが作成されました',
                             lastMessageTime: Date.now(),
                             lastSenderId: myId,
-                            unread: false
+                            unread: false,
+                            pinnedUsers: {}
                         });
 
                         state.isGroupModalOpen = false;
@@ -1443,7 +1449,8 @@ auth.onAuthStateChanged(async (user) => {
                                 lastMessage: '',
                                 lastMessageTime: Date.now(),
                                 lastSenderId: '',
-                                unread: false
+                                unread: false,
+                                pinnedUsers: {}
                             }, { merge: true });
 
                             alert('フレンドに追加しました！');
@@ -1484,15 +1491,19 @@ auth.onAuthStateChanged(async (user) => {
                 };
             });
 
+            // ★ 修正点: トークピン留めの切り替え（ユーザーごとに独立して保存）
             document.querySelectorAll('.toggle-pin-room-btn').forEach(btn => {
                 btn.onclick = async (e) => {
                     e.stopPropagation();
                     const roomId = btn.getAttribute('data-toggle-pin-room');
                     const isCurrentlyPinned = btn.getAttribute('data-pinned') === 'true';
+                    const myLoginId = state.currentUserData.loginId;
 
                     try {
                         await db.collection('dms').doc(roomId).set({
-                            isPinned: !isCurrentlyPinned
+                            pinnedUsers: {
+                                [myLoginId]: !isCurrentlyPinned
+                            }
                         }, { merge: true });
 
                         await fetchDMsOnce();
@@ -1638,6 +1649,7 @@ auth.onAuthStateChanged(async (user) => {
                     };
 
                     const roomId = state.activeRoomId;
+                    input.value = andResetInput = ''; // clean input
                     input.value = '';
                     state.selectedFile = null;
                     state.replyToMessage = null;
