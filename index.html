@@ -232,7 +232,6 @@ auth.onAuthStateChanged(async (user) => {
                     }
                 });
 
-                // ユーザーごとのピン留め状態（pinnedUsers）に基づいてソート
                 const myLoginId = state.currentUserData.loginId;
                 fetchedDms.sort((a, b) => {
                     const aPinned = a.pinnedUsers && a.pinnedUsers[myLoginId] === true;
@@ -560,6 +559,9 @@ auth.onAuthStateChanged(async (user) => {
                             </div>
                         </div>
                         <div class="flex items-center space-x-1">
+                            <button id="forceReloadBtn" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition" title="強制リロード">
+                                <i data-lucide="rotate-cw" class="w-5 h-5"></i>
+                            </button>
                             ${renderDarkModeButton()}
                             <button id="goToSettingsBtn" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition" title="プロフィール設定">
                                 <i data-lucide="settings" class="w-5 h-5"></i>
@@ -1120,6 +1122,16 @@ auth.onAuthStateChanged(async (user) => {
 
         // --- 6. イベントハンドラ ---
         function attachEvents() {
+            const forceReloadBtn = document.getElementById('forceReloadBtn');
+            if (forceReloadBtn) {
+                forceReloadBtn.onclick = async () => {
+                    forceReloadBtn.querySelector('svg').classList.add('animate-spin');
+                    await fetchAllUsers();
+                    await fetchDMsOnce();
+                    renderApp();
+                };
+            }
+
             const globalDarkBtn = document.getElementById('globalDarkModeToggleBtn');
             if (globalDarkBtn) {
                 globalDarkBtn.onclick = () => {
@@ -1491,7 +1503,6 @@ auth.onAuthStateChanged(async (user) => {
                 };
             });
 
-            // ★ 修正点: トークピン留めの切り替え（ユーザーごとに独立して保存）
             document.querySelectorAll('.toggle-pin-room-btn').forEach(btn => {
                 btn.onclick = async (e) => {
                     e.stopPropagation();
@@ -1649,7 +1660,6 @@ auth.onAuthStateChanged(async (user) => {
                     };
 
                     const roomId = state.activeRoomId;
-                    input.value = andResetInput = ''; // clean input
                     input.value = '';
                     state.selectedFile = null;
                     state.replyToMessage = null;
